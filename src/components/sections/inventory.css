@@ -1,0 +1,59 @@
+/* Inventory.css */
+.inventory-container {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  
+  .inventory-table {
+    min-width: 800px;
+  }
+  
+  .inventory-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  
+  .inventory-status {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  
+  .inventory-status.in-stock {
+    background-color: #d1fae5;
+    color: #065f46;
+  }
+  
+  .inventory-status.low-stock {
+    background-color: #fef3c7;
+    color: #92400e;
+  }
+  
+  .inventory-status.out-of-stock {
+    background-color: #fee2e2;
+    color: #991b1b;
+  }
+  
+  .inventory-search {
+    margin-bottom: 20px;
+  }
+  
+  .inventory-filters {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  
+  @media (max-width: 768px) {
+    .inventory-filters {
+      flex-direction: column;
+    }
+    
+    .inventory-actions {
+      flex-direction: column;
+    }
+  }
