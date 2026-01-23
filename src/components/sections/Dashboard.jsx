@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useData } from '../../contexts/DataContextAPI';
 
 // ========== FORMATTING HELPERS ==========
@@ -31,6 +31,11 @@ const getDaysAgo = (date) => {
   return formatDate(date);
 };
 
+const getMonthName = (monthIndex) => {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return months[monthIndex];
+};
+
 // ========== MAIN COMPONENT ==========
 const Dashboard = () => {
   const { 
@@ -42,6 +47,9 @@ const Dashboard = () => {
     interactions = [],
     commissionPayments = []
   } = useData();
+
+  // Forecast view toggle
+  const [forecastView, setForecastView] = useState('monthly'); // 'monthly' | 'quarterly'
 
   // ========== FINANCIAL METRICS ==========
   const financials = useMemo(() => {
@@ -80,7 +88,7 @@ const Dashboard = () => {
     };
   }, [projects, commissionPayments]);
 
-  // ========== OVERDUE ANALYSIS ==========
+  // ========== OVERDUE ANALYSIS - FIXED FOR JSONB INSTALLMENTS ==========
   const overdueMetrics = useMemo(() => {
     let overdueAmount = 0, futureAmount = 0, overdueCount = 0;
     const today = new Date();
@@ -91,41 +99,198 @@ const Dashboard = () => {
       return cycles[cycle] || 6;
     };
 
-    projects.forEach(txn => {
-      const firstDue = txn.firstDueDate || txn.nextDue || txn.nextDueDate;
-      const sale = parseFloat(txn.sale) || parseFloat(txn.saleValue) || 0;
-      const received = parseFloat(txn.received) || parseFloat(txn.totalReceived) || 0;
-      const receivable = sale - received;
+    projects.forEach(project => {
+      const sale = parseFloat(project.sale) || parseFloat(project.saleValue) || 0;
+      const received = parseFloat(project.received) || parseFloat(project.totalReceived) || 0;
+      const totalReceivable = sale - received;
 
-      if (!firstDue || receivable <= 0) {
-        if (receivable > 0) futureAmount += receivable;
-        return;
-      }
+      if (totalReceivable <= 0) return;
 
-      const installments = parseInt(txn.installments) || parseInt(txn.installmentCount) || 4;
-      const cycleMonths = getCycleMonths(txn.paymentCycle || txn.cycle);
-      const installmentAmount = sale / installments;
-      let remaining = received;
-      let hasOverdue = false;
-
-      for (let i = 0; i < installments; i++) {
-        const dueDate = new Date(firstDue);
-        dueDate.setMonth(dueDate.getMonth() + (i * cycleMonths));
-        dueDate.setHours(0, 0, 0, 0);
-
-        const paid = Math.min(remaining, installmentAmount);
-        remaining -= paid;
-        const due = installmentAmount - paid;
-
-        if (due > 0) {
-          if (dueDate <= today) { overdueAmount += due; hasOverdue = true; }
-          else { futureAmount += due; }
+      // Get installments - handle both JSON string and array
+      let installments = project.installments;
+      if (typeof installments === 'string') {
+        try {
+          installments = JSON.parse(installments);
+        } catch {
+          installments = null;
         }
       }
-      if (hasOverdue) overdueCount++;
+
+      // If installments is an array with due dates, use it directly
+      if (Array.isArray(installments) && installments.length > 0 && installments[0]?.dueDate) {
+        let projectHasOverdue = false;
+
+        installments.forEach(inst => {
+          const dueDate = inst.dueDate || inst.due_date;
+          if (!dueDate) return;
+
+          const due = new Date(dueDate);
+          due.setHours(0, 0, 0, 0);
+
+          const amount = parseFloat(inst.amount) || 0;
+          const paid = inst.paid === true || inst.paid === 'true';
+          const partialPaid = parseFloat(inst.partialPaid || inst.partial_paid) || 0;
+          const remaining = paid ? 0 : (amount - partialPaid);
+
+          if (remaining > 0) {
+            if (due < today) {
+              overdueAmount += remaining;
+              projectHasOverdue = true;
+            } else {
+              futureAmount += remaining;
+            }
+          }
+        });
+
+        if (projectHasOverdue) overdueCount++;
+      } else {
+        // Use first_due_date + installment_count + cycle to calculate schedule
+        const firstDue = project.first_due_date || project.firstDueDate || project.nextDue || project.nextDueDate;
+        
+        if (!firstDue) {
+          // No due date info, treat full receivable as future
+          futureAmount += totalReceivable;
+          return;
+        }
+
+        const installmentCount = parseInt(project.installment_count) || parseInt(project.installmentCount) || 
+                                 (typeof installments === 'number' ? installments : 4);
+        const cycleMonths = getCycleMonths(project.payment_cycle || project.paymentCycle || project.cycle);
+        const installmentAmount = sale / installmentCount;
+        let remaining = received;
+        let hasOverdue = false;
+
+        for (let i = 0; i < installmentCount; i++) {
+          const dueDate = new Date(firstDue);
+          dueDate.setMonth(dueDate.getMonth() + (i * cycleMonths));
+          dueDate.setHours(0, 0, 0, 0);
+
+          const paid = Math.min(remaining, installmentAmount);
+          remaining -= paid;
+          const due = installmentAmount - paid;
+
+          if (due > 0) {
+            if (dueDate <= today) { overdueAmount += due; hasOverdue = true; }
+            else { futureAmount += due; }
+          }
+        }
+        if (hasOverdue) overdueCount++;
+      }
     });
 
     return { overdueAmount, futureAmount, overdueCount };
+  }, [projects]);
+
+  // ========== EXPECTED RECEIVABLES FORECAST ==========
+  const receivablesForecast = useMemo(() => {
+    const today = new Date();
+    const monthlyData = {};
+    const quarterlyData = {};
+
+    const getCycleMonths = (cycle) => {
+      const cycles = { monthly: 1, quarterly: 3, bi_annual: 6, biannual: 6, semi_annual: 6, annual: 12, yearly: 12 };
+      return cycles[cycle] || 6;
+    };
+
+    projects.forEach(project => {
+      const sale = parseFloat(project.sale) || parseFloat(project.saleValue) || 0;
+      const received = parseFloat(project.received) || parseFloat(project.totalReceived) || 0;
+      const totalReceivable = sale - received;
+
+      if (totalReceivable <= 0) return;
+
+      // Get installments
+      let installments = project.installments;
+      if (typeof installments === 'string') {
+        try {
+          installments = JSON.parse(installments);
+        } catch {
+          installments = null;
+        }
+      }
+
+      // If installments is an array with due dates, use it directly
+      if (Array.isArray(installments) && installments.length > 0 && installments[0]?.dueDate) {
+        installments.forEach(inst => {
+          const dueDate = inst.dueDate || inst.due_date;
+          if (!dueDate) return;
+
+          const due = new Date(dueDate);
+          const amount = parseFloat(inst.amount) || 0;
+          const paid = inst.paid === true || inst.paid === 'true';
+          const partialPaid = parseFloat(inst.partialPaid || inst.partial_paid) || 0;
+          const remaining = paid ? 0 : (amount - partialPaid);
+
+          if (remaining <= 0) return;
+
+          // Monthly key
+          const monthKey = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}`;
+          if (!monthlyData[monthKey]) {
+            monthlyData[monthKey] = { amount: 0, count: 0, year: due.getFullYear(), month: due.getMonth(), isPast: due < today };
+          }
+          monthlyData[monthKey].amount += remaining;
+          monthlyData[monthKey].count++;
+
+          // Quarterly key
+          const quarter = Math.ceil((due.getMonth() + 1) / 3);
+          const quarterKey = `${due.getFullYear()}-Q${quarter}`;
+          if (!quarterlyData[quarterKey]) {
+            quarterlyData[quarterKey] = { amount: 0, count: 0, year: due.getFullYear(), quarter, isPast: due < today };
+          }
+          quarterlyData[quarterKey].amount += remaining;
+          quarterlyData[quarterKey].count++;
+        });
+      } else {
+        // Generate schedule from first_due_date + cycle
+        const firstDue = project.first_due_date || project.firstDueDate || project.nextDue || project.nextDueDate;
+        if (!firstDue) return;
+
+        const installmentCount = parseInt(project.installment_count) || parseInt(project.installmentCount) || 
+                                 (typeof installments === 'number' ? installments : 4);
+        const cycleMonths = getCycleMonths(project.payment_cycle || project.paymentCycle || project.cycle);
+        const installmentAmount = sale / installmentCount;
+        let remaining = received;
+
+        for (let i = 0; i < installmentCount; i++) {
+          const dueDate = new Date(firstDue);
+          dueDate.setMonth(dueDate.getMonth() + (i * cycleMonths));
+
+          const paid = Math.min(remaining, installmentAmount);
+          remaining -= paid;
+          const dueAmount = installmentAmount - paid;
+
+          if (dueAmount <= 0) continue;
+
+          // Monthly key
+          const monthKey = `${dueDate.getFullYear()}-${String(dueDate.getMonth() + 1).padStart(2, '0')}`;
+          if (!monthlyData[monthKey]) {
+            monthlyData[monthKey] = { amount: 0, count: 0, year: dueDate.getFullYear(), month: dueDate.getMonth(), isPast: dueDate < today };
+          }
+          monthlyData[monthKey].amount += dueAmount;
+          monthlyData[monthKey].count++;
+
+          // Quarterly key
+          const quarter = Math.ceil((dueDate.getMonth() + 1) / 3);
+          const quarterKey = `${dueDate.getFullYear()}-Q${quarter}`;
+          if (!quarterlyData[quarterKey]) {
+            quarterlyData[quarterKey] = { amount: 0, count: 0, year: dueDate.getFullYear(), quarter, isPast: dueDate < today };
+          }
+          quarterlyData[quarterKey].amount += dueAmount;
+          quarterlyData[quarterKey].count++;
+        }
+      }
+    });
+
+    // Sort and return
+    const sortedMonths = Object.entries(monthlyData)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, 12);
+
+    const sortedQuarters = Object.entries(quarterlyData)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, 8);
+
+    return { monthly: sortedMonths, quarterly: sortedQuarters };
   }, [projects]);
 
   // ========== CUSTOMER STATS ==========
@@ -538,6 +703,70 @@ const Dashboard = () => {
                   <div style={{...styles.agingFill, backgroundColor: '#ef4444', width: `${financials.totalReceivable > 0 ? (overdueMetrics.overdueAmount / financials.totalReceivable * 100) : 0}%`}}></div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* Expected Receivables Forecast */}
+          <div style={styles.forecastSection}>
+            <div style={styles.forecastHeader}>
+              <h4 style={styles.forecastTitle}>📅 Expected Receivables</h4>
+              <div style={styles.forecastToggle}>
+                <button 
+                  style={{...styles.toggleBtn, ...(forecastView === 'monthly' ? styles.toggleBtnActive : {})}}
+                  onClick={() => setForecastView('monthly')}
+                >
+                  Monthly
+                </button>
+                <button 
+                  style={{...styles.toggleBtn, ...(forecastView === 'quarterly' ? styles.toggleBtnActive : {})}}
+                  onClick={() => setForecastView('quarterly')}
+                >
+                  Quarterly
+                </button>
+              </div>
+            </div>
+            <div style={styles.forecastList}>
+              {forecastView === 'monthly' ? (
+                receivablesForecast.monthly.length > 0 ? (
+                  receivablesForecast.monthly.slice(0, 6).map(([key, data]) => (
+                    <div key={key} style={{...styles.forecastItem, ...(data.isPast ? styles.forecastItemOverdue : {})}}>
+                      <div style={styles.forecastPeriod}>
+                        <span style={styles.forecastMonth}>{getMonthName(data.month)}</span>
+                        <span style={styles.forecastYear}>{data.year}</span>
+                      </div>
+                      <div style={styles.forecastRight}>
+                        <span style={{...styles.forecastAmount, color: data.isPast ? '#dc2626' : '#0f172a'}}>
+                          {formatCurrency(data.amount)}
+                        </span>
+                        <span style={styles.forecastCount}>{data.count} inst.</span>
+                        {data.isPast && <span style={styles.overdueTag}>OVERDUE</span>}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.forecastEmpty}>No scheduled installments</div>
+                )
+              ) : (
+                receivablesForecast.quarterly.length > 0 ? (
+                  receivablesForecast.quarterly.slice(0, 4).map(([key, data]) => (
+                    <div key={key} style={{...styles.forecastItem, ...(data.isPast ? styles.forecastItemOverdue : {})}}>
+                      <div style={styles.forecastPeriod}>
+                        <span style={styles.forecastMonth}>Q{data.quarter}</span>
+                        <span style={styles.forecastYear}>{data.year}</span>
+                      </div>
+                      <div style={styles.forecastRight}>
+                        <span style={{...styles.forecastAmount, color: data.isPast ? '#dc2626' : '#0f172a'}}>
+                          {formatCurrency(data.amount)}
+                        </span>
+                        <span style={styles.forecastCount}>{data.count} inst.</span>
+                        {data.isPast && <span style={styles.overdueTag}>OVERDUE</span>}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div style={styles.forecastEmpty}>No scheduled installments</div>
+                )
+              )}
             </div>
           </div>
 
@@ -1216,6 +1445,104 @@ const styles = {
   metricValue: {
     fontWeight: '600',
     color: '#0f172a',
+  },
+  // ========== FORECAST STYLES ==========
+  forecastSection: {
+    marginTop: '20px',
+    padding: '16px',
+    backgroundColor: '#f8fafc',
+    borderRadius: '12px',
+  },
+  forecastHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+  },
+  forecastTitle: {
+    fontSize: '13px',
+    fontWeight: '600',
+    color: '#475569',
+    margin: 0,
+  },
+  forecastToggle: {
+    display: 'flex',
+    backgroundColor: '#e2e8f0',
+    borderRadius: '6px',
+    padding: '2px',
+  },
+  toggleBtn: {
+    padding: '4px 10px',
+    border: 'none',
+    background: 'none',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: '500',
+    color: '#64748b',
+    cursor: 'pointer',
+  },
+  toggleBtnActive: {
+    backgroundColor: '#fff',
+    color: '#0f172a',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+  },
+  forecastList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  forecastItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '10px 12px',
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    border: '1px solid #e2e8f0',
+  },
+  forecastItemOverdue: {
+    backgroundColor: '#fef2f2',
+    border: '1px solid #fecaca',
+  },
+  forecastPeriod: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  forecastMonth: {
+    fontSize: '13px',
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  forecastYear: {
+    fontSize: '11px',
+    color: '#94a3b8',
+  },
+  forecastRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+  },
+  forecastAmount: {
+    fontSize: '14px',
+    fontWeight: '700',
+  },
+  forecastCount: {
+    fontSize: '10px',
+    color: '#94a3b8',
+  },
+  overdueTag: {
+    fontSize: '9px',
+    fontWeight: '700',
+    color: '#dc2626',
+    backgroundColor: '#fee2e2',
+    padding: '2px 6px',
+    borderRadius: '4px',
+  },
+  forecastEmpty: {
+    textAlign: 'center',
+    padding: '20px',
+    color: '#94a3b8',
+    fontSize: '12px',
   },
 };
 

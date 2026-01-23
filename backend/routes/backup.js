@@ -303,8 +303,10 @@ router.post('/import', async (req, res) => {
           const result = await safeInsert(client, `sp_proj_${i}`, async () => {
             await client.query(
               `INSERT INTO projects (id, customer_id, broker_id, broker_commission_rate, company_rep_id, company_rep_commission_rate,
-                                     name, unit, marlas, rate, sale, received, status, cycle, notes, installments, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                     name, unit, marlas, rate, sale, received, status, cycle, notes, installments,
+                                     first_due_date, next_due_date, installment_count, payment_cycle, rate_per_marla,
+                                     project_name, unit_number, inventory_id, block, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
                ON CONFLICT (id) DO UPDATE SET
                customer_id = EXCLUDED.customer_id, broker_id = EXCLUDED.broker_id,
                broker_commission_rate = EXCLUDED.broker_commission_rate,
@@ -312,6 +314,10 @@ router.post('/import', async (req, res) => {
                name = EXCLUDED.name, unit = EXCLUDED.unit, marlas = EXCLUDED.marlas, rate = EXCLUDED.rate,
                sale = EXCLUDED.sale, received = EXCLUDED.received, status = EXCLUDED.status,
                cycle = EXCLUDED.cycle, notes = EXCLUDED.notes, installments = EXCLUDED.installments,
+               first_due_date = EXCLUDED.first_due_date, next_due_date = EXCLUDED.next_due_date,
+               installment_count = EXCLUDED.installment_count, payment_cycle = EXCLUDED.payment_cycle,
+               rate_per_marla = EXCLUDED.rate_per_marla, project_name = EXCLUDED.project_name,
+               unit_number = EXCLUDED.unit_number, inventory_id = EXCLUDED.inventory_id, block = EXCLUDED.block,
                updated_at = EXCLUDED.updated_at`,
               [
                 project.id, 
@@ -323,13 +329,22 @@ router.post('/import', async (req, res) => {
                 project.name || '', 
                 project.unit || null,
                 project.marlas || 0, 
-                project.rate || 0, 
+                project.rate || project.ratePerMarla || 0, 
                 project.sale || project.saleValue || 0, 
                 project.received || 0, 
                 project.status || 'active',
                 project.cycle || project.paymentCycle || 'bi_annual', 
                 project.notes || null, 
-                JSON.stringify(project.installments || []),
+                JSON.stringify(project.installments || 4),
+                project.firstDueDate || project.first_due_date || null,
+                project.nextDueDate || project.nextDue || project.next_due_date || null,
+                parseInt(project.installments) || parseInt(project.installmentCount) || 4,
+                project.paymentCycle || project.payment_cycle || project.cycle || 'bi_annual',
+                project.ratePerMarla || project.rate_per_marla || project.rate || 0,
+                project.projectName || project.project_name || null,
+                project.unitNumber || project.unit_number || project.unit || null,
+                project.inventoryId || project.inventory_id || null,
+                project.block || null,
                 project.createdAt || project.created_at || new Date().toISOString(), 
                 project.updatedAt || project.updated_at || new Date().toISOString()
               ]
@@ -429,15 +444,24 @@ router.post('/import', async (req, res) => {
             try { contacts = JSON.parse(contacts); } catch (e) { contacts = []; }
           }
           
+          let attachments = interaction.attachments || [];
+          if (typeof attachments === 'string') {
+            try { attachments = JSON.parse(attachments); } catch (e) { attachments = []; }
+          }
+          
           const result = await safeInsert(client, `sp_int_${i}`, async () => {
             await client.query(
-              `INSERT INTO interactions (id, contact_type, customer_id, broker_id, type, status, priority, date, notes, next_follow_up, contacts, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+              `INSERT INTO interactions (id, contact_type, customer_id, broker_id, type, status, priority, date, notes, next_follow_up, contacts,
+                                        subject, time, outcome, follow_up_date, attachments, company_rep_id, company_rep_name, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                ON CONFLICT (id) DO UPDATE SET
                contact_type = EXCLUDED.contact_type, customer_id = EXCLUDED.customer_id,
                broker_id = EXCLUDED.broker_id, type = EXCLUDED.type, status = EXCLUDED.status,
                priority = EXCLUDED.priority, date = EXCLUDED.date, notes = EXCLUDED.notes,
                next_follow_up = EXCLUDED.next_follow_up, contacts = EXCLUDED.contacts,
+               subject = EXCLUDED.subject, time = EXCLUDED.time, outcome = EXCLUDED.outcome,
+               follow_up_date = EXCLUDED.follow_up_date, attachments = EXCLUDED.attachments,
+               company_rep_id = EXCLUDED.company_rep_id, company_rep_name = EXCLUDED.company_rep_name,
                updated_at = EXCLUDED.updated_at`,
               [
                 interactionId,
@@ -451,6 +475,13 @@ router.post('/import', async (req, res) => {
                 interaction.notes || null,
                 interaction.nextFollowUp || interaction.next_follow_up || null,
                 JSON.stringify(contacts),
+                interaction.subject || null,
+                interaction.time || null,
+                interaction.outcome || null,
+                interaction.followUpDate || interaction.follow_up_date || null,
+                JSON.stringify(attachments),
+                interaction.companyRepId || interaction.company_rep_id || null,
+                interaction.companyRepName || interaction.company_rep_name || null,
                 interaction.createdAt || interaction.created_at || new Date().toISOString(),
                 interaction.updatedAt || interaction.updated_at || new Date().toISOString()
               ]
@@ -488,8 +519,9 @@ router.post('/import', async (req, res) => {
           const result = await safeInsert(client, `sp_inv_${i}`, async () => {
             await client.query(
               `INSERT INTO inventory (id, project_name, block, unit_shop_number, unit, unit_type, marlas, rate_per_marla,
-                                      total_value, sale_value, plot_features, plot_feature, status, transaction_id, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                                      total_value, sale_value, plot_features, plot_feature, status, transaction_id,
+                                      customer_id, customer_name, sold_at, notes, other_features, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                ON CONFLICT (id) DO UPDATE SET
                project_name = EXCLUDED.project_name, block = EXCLUDED.block,
                unit_shop_number = EXCLUDED.unit_shop_number, unit = EXCLUDED.unit,
@@ -497,7 +529,10 @@ router.post('/import', async (req, res) => {
                rate_per_marla = EXCLUDED.rate_per_marla, total_value = EXCLUDED.total_value,
                sale_value = EXCLUDED.sale_value, plot_features = EXCLUDED.plot_features,
                plot_feature = EXCLUDED.plot_feature, status = EXCLUDED.status,
-               transaction_id = EXCLUDED.transaction_id, updated_at = EXCLUDED.updated_at`,
+               transaction_id = EXCLUDED.transaction_id, customer_id = EXCLUDED.customer_id,
+               customer_name = EXCLUDED.customer_name, sold_at = EXCLUDED.sold_at,
+               notes = EXCLUDED.notes, other_features = EXCLUDED.other_features,
+               updated_at = EXCLUDED.updated_at`,
               [
                 itemId,
                 item.projectName || item.project_name || null,
@@ -513,6 +548,11 @@ router.post('/import', async (req, res) => {
                 item.plotFeature || item.plot_feature || null,
                 item.status || 'available',
                 item.transactionId || item.transaction_id || null,
+                item.customerId || item.customer_id || null,
+                item.customerName || item.customer_name || null,
+                item.soldAt || item.sold_at || null,
+                item.notes || null,
+                item.otherFeatures || item.other_features || null,
                 item.createdAt || item.created_at || new Date().toISOString(),
                 item.updatedAt || item.updated_at || new Date().toISOString()
               ]

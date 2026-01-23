@@ -31,18 +31,21 @@ router.post('/', async (req, res) => {
   try {
     const {
       id, projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
-      totalValue, saleValue, plotFeatures, plotFeature, status, transactionId
+      totalValue, saleValue, plotFeatures, plotFeature, status, transactionId,
+      customerId, customerName, soldAt, notes, otherFeatures
     } = req.body;
     
     const result = await pool.query(
       `INSERT INTO inventory (id, project_name, block, unit_shop_number, unit, unit_type, marlas, rate_per_marla,
-                              total_value, sale_value, plot_features, plot_feature, status, transaction_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                              total_value, sale_value, plot_features, plot_feature, status, transaction_id,
+                              customer_id, customer_name, sold_at, notes, other_features)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        RETURNING *`,
       [
         id, projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
         totalValue || 0, saleValue || 0, JSON.stringify(plotFeatures || []), plotFeature,
-        status || 'available', transactionId
+        status || 'available', transactionId,
+        customerId || null, customerName || null, soldAt || null, notes || null, otherFeatures || null
       ]
     );
     res.status(201).json({ success: true, data: result.rows[0] });
@@ -56,20 +59,25 @@ router.put('/:id', async (req, res) => {
   try {
     const {
       projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
-      totalValue, saleValue, plotFeatures, plotFeature, status, transactionId
+      totalValue, saleValue, plotFeatures, plotFeature, status, transactionId,
+      customerId, customerName, soldAt, notes, otherFeatures
     } = req.body;
     
     const result = await pool.query(
       `UPDATE inventory 
        SET project_name = $1, block = $2, unit_shop_number = $3, unit = $4, unit_type = $5,
            marlas = $6, rate_per_marla = $7, total_value = $8, sale_value = $9,
-           plot_features = $10, plot_feature = $11, status = $12, transaction_id = $13
-       WHERE id = $14
+           plot_features = $10, plot_feature = $11, status = $12, transaction_id = $13,
+           customer_id = $14, customer_name = $15, sold_at = $16, notes = $17, other_features = $18,
+           updated_at = NOW()
+       WHERE id = $19
        RETURNING *`,
       [
         projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
         totalValue, saleValue, JSON.stringify(plotFeatures || []), plotFeature,
-        status, transactionId, req.params.id
+        status, transactionId,
+        customerId, customerName, soldAt, notes, otherFeatures,
+        req.params.id
       ]
     );
     if (result.rows.length === 0) {
@@ -103,13 +111,15 @@ router.post('/bulk', async (req, res) => {
     for (const item of inventory) {
       const {
         id, projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
-        totalValue, saleValue, plotFeatures, plotFeature, status, transactionId
+        totalValue, saleValue, plotFeatures, plotFeature, status, transactionId,
+        customerId, customerName, soldAt, notes, otherFeatures
       } = item;
       try {
         const result = await pool.query(
           `INSERT INTO inventory (id, project_name, block, unit_shop_number, unit, unit_type, marlas, rate_per_marla,
-                                  total_value, sale_value, plot_features, plot_feature, status, transaction_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                  total_value, sale_value, plot_features, plot_feature, status, transaction_id,
+                                  customer_id, customer_name, sold_at, notes, other_features)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
            ON CONFLICT (id) DO UPDATE SET
            project_name = EXCLUDED.project_name, block = EXCLUDED.block,
            unit_shop_number = EXCLUDED.unit_shop_number, unit = EXCLUDED.unit,
@@ -117,12 +127,16 @@ router.post('/bulk', async (req, res) => {
            rate_per_marla = EXCLUDED.rate_per_marla, total_value = EXCLUDED.total_value,
            sale_value = EXCLUDED.sale_value, plot_features = EXCLUDED.plot_features,
            plot_feature = EXCLUDED.plot_feature, status = EXCLUDED.status,
-           transaction_id = EXCLUDED.transaction_id
+           transaction_id = EXCLUDED.transaction_id, customer_id = EXCLUDED.customer_id,
+           customer_name = EXCLUDED.customer_name, sold_at = EXCLUDED.sold_at,
+           notes = EXCLUDED.notes, other_features = EXCLUDED.other_features,
+           updated_at = NOW()
            RETURNING *`,
           [
             id, projectName, block, unitShopNumber, unit, unitType, marlas, ratePerMarla,
             totalValue || 0, saleValue || 0, JSON.stringify(plotFeatures || []), plotFeature,
-            status || 'available', transactionId
+            status || 'available', transactionId,
+            customerId || null, customerName || null, soldAt || null, notes || null, otherFeatures || null
           ]
         );
         results.push(result.rows[0]);
@@ -138,4 +152,3 @@ router.post('/bulk', async (req, res) => {
 });
 
 export default router;
-
