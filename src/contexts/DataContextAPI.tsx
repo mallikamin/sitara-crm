@@ -907,8 +907,10 @@ export function DataProvider({ children }) {
         clearAllData,
         importBackup,
         refreshData: loadDataFromAPI,
+        refreshAllData: loadDataFromAPI, // Alias for BackupManager
         generateId,
         storageInfo: getStorageInfo(),
+        apiAvailable, // Expose API status
 
         // Getters
         getCustomer: useCallback((id) => {

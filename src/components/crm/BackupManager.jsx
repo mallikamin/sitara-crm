@@ -1,193 +1,396 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useData } from '../../contexts/DataContextAPI';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 export default function BackupManager({ onClose }) {
   const {
-    storageInfo,
-    lastSaved,
-    saveStatus,
-    createManualBackup,
-    getBackupList,
-    restoreFromBackup,
-    deleteBackup,
-    cleanupOldBackups,
-    importBackup,
-    exportToFile,
-    clearAllData,
     customers,
+    brokers,
+    companyReps,
     projects,
     receipts,
     inventory,
-    interactions
+    interactions,
+    commissionPayments,
+    refreshAllData
   } = useData();
 
-  const [backups, setBackups] = useState([]);
   const [activeTab, setActiveTab] = useState('overview');
   const [isProcessing, setIsProcessing] = useState(false);
   const [message, setMessage] = useState(null);
+  const [apiStatus, setApiStatus] = useState({ checked: false, connected: false });
+  const [lastExport, setLastExport] = useState(null);
+  const [importStats, setImportStats] = useState(null);
   const fileInputRef = useRef(null);
 
+  // Check API connection on mount
   useEffect(() => {
-    refreshBackupList();
+    checkApiConnection();
   }, []);
 
-  const refreshBackupList = () => {
-    setBackups(getBackupList());
+  const checkApiConnection = async () => {
+    try {
+      const response = await fetch(`${API_URL.replace('/api', '')}/health`);
+      const data = await response.json();
+      setApiStatus({ 
+        checked: true, 
+        connected: data.status === 'ok',
+        database: data.database
+      });
+    } catch (error) {
+      setApiStatus({ checked: true, connected: false, error: error.message });
+    }
   };
 
-  const showMessage = (text, type = 'success') => {
+  const showMessage = (text, type = 'success', duration = 5000) => {
     setMessage({ text, type });
-    setTimeout(() => setMessage(null), 5000);
-  };
-
-  const handleCreateBackup = async () => {
-    setIsProcessing(true);
-    try {
-      const result = createManualBackup();
-      if (result.success) {
-        showMessage('Backup created successfully!', 'success');
-        refreshBackupList();
-      } else {
-        showMessage('Failed to create backup: ' + result.error, 'error');
-      }
-    } catch (error) {
-      showMessage('Error: ' + (error.message || 'Unknown error occurred'), 'error');
-    } finally {
-      setIsProcessing(false);
+    if (duration > 0) {
+      setTimeout(() => setMessage(null), duration);
     }
   };
 
-  const handleExport = () => {
+  // Current data stats from context
+  const currentStats = {
+    customers: customers?.length || 0,
+    brokers: brokers?.length || 0,
+    companyReps: companyReps?.length || 0,
+    projects: projects?.length || 0,
+    receipts: receipts?.length || 0,
+    inventory: inventory?.length || 0,
+    interactions: interactions?.length || 0,
+    commissionPayments: commissionPayments?.length || 0,
+  };
+
+  const totalRecords = Object.values(currentStats).reduce((a, b) => a + b, 0);
+
+  // ==================== EXPORT FUNCTIONS ====================
+  
+  const handleExport = async () => {
     setIsProcessing(true);
+    showMessage('Exporting data from database...', 'info', 0);
+    
     try {
-      const result = exportToFile();
-      if (result.success) {
-        showMessage('Exported to ' + result.filename, 'success');
+      const response = await fetch(`${API_URL}/backup/export`);
+      const result = await response.json();
+      
+      if (!result.success) {
+        throw new Error(result.error || 'Export failed');
       }
+
+      const backup = result.data;
+      
+      // Add metadata
+      backup.exportedAt = new Date().toISOString();
+      backup.exportedFrom = 'Sitara CRM';
+      backup.version = '4.0';
+      
+      // Generate filename
+      const date = new Date().toISOString().split('T')[0];
+      const time = new Date().toTimeString().split(' ')[0].replace(/:/g, '-');
+      const filename = `sitara-crm-backup-${date}-${time}.json`;
+      
+      // Download file
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      // Calculate stats
+      const exportStats = {
+        customers: backup.customers?.length || 0,
+        brokers: backup.brokers?.length || 0,
+        companyReps: backup.companyReps?.length || 0,
+        projects: backup.projects?.length || 0,
+        receipts: backup.receipts?.length || 0,
+        interactions: backup.interactions?.length || 0,
+        inventory: backup.inventory?.length || 0,
+        commissionPayments: backup.commissionPayments?.length || 0,
+      };
+      
+      setLastExport({
+        filename,
+        timestamp: new Date().toISOString(),
+        stats: exportStats
+      });
+      
+      showMessage(`✅ Exported ${Object.values(exportStats).reduce((a,b) => a+b, 0)} records to ${filename}`, 'success');
+      
     } catch (error) {
-      showMessage('Export failed: ' + error.message, 'error');
+      console.error('Export error:', error);
+      showMessage(`❌ Export failed: ${error.message}`, 'error');
     }
+    
     setIsProcessing(false);
   };
 
-  const handleImport = (event) => {
+  // ==================== IMPORT FUNCTIONS ====================
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelect = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      showMessage('File is too large. Maximum size is 10MB.', 'error');
+    // Validate file size (50MB max for large datasets)
+    if (file.size > 50 * 1024 * 1024) {
+      showMessage('File is too large. Maximum size is 50MB.', 'error');
+      event.target.value = '';
+      return;
+    }
+
+    // Validate file type
+    if (!file.name.endsWith('.json')) {
+      showMessage('Please select a JSON file.', 'error');
       event.target.value = '';
       return;
     }
 
     setIsProcessing(true);
+    showMessage('Reading backup file...', 'info', 0);
+
     const reader = new FileReader();
     
     reader.onload = async (e) => {
       try {
-        const result = await importBackup(e.target.result);
-        console.log('Import result:', result);
+        const content = e.target.result;
+        let backup;
         
-        if (result && result.success) {
-          const stats = result.stats || {};
-          let msg = `Import successful! Loaded: ${stats.customers || 0} customers, ${stats.projects || 0} transactions, ${stats.receipts || 0} receipts`;
-          
-          if (stats.brokers > 0) {
-            msg += `, ${stats.brokers} brokers`;
-          }
-          
-          if (result.warnings?.length > 0) {
-            msg += `. Warnings: ${result.warnings.join(', ')}`;
-          }
-          
-          showMessage(msg, 'success');
-          refreshBackupList();
-          
-          // Refresh the entire app data
-          setTimeout(() => {
-            window.location.reload(); // Or use a state update to refresh data
-          }, 1000);
-        } else {
-          let errorMsg = 'Import failed: ';
-          if (result && result.error) {
-            errorMsg += result.error;
-          } else if (result && result.errors) {
-            errorMsg += result.errors.join(', ');
-          } else if (result.error) {
-            errorMsg += result.error;
-          } else {
-            errorMsg += 'Unknown error';
-          }
-          showMessage(errorMsg, 'error');
+        try {
+          backup = JSON.parse(content);
+        } catch (parseError) {
+          throw new Error('Invalid JSON file. Please select a valid backup file.');
         }
+
+        // Validate backup structure
+        if (!backup.customers && !backup.brokers && !backup.projects) {
+          throw new Error('Invalid backup format. Missing required data fields.');
+        }
+
+        // Show confirmation with stats
+        const importPreview = {
+          customers: backup.customers?.length || 0,
+          brokers: backup.brokers?.length || 0,
+          companyReps: backup.companyReps?.length || 0,
+          projects: backup.projects?.length || 0,
+          receipts: backup.receipts?.length || 0,
+          interactions: backup.interactions?.length || 0,
+          inventory: backup.inventory?.length || 0,
+          commissionPayments: backup.commissionPayments?.length || 0,
+        };
+
+        const totalToImport = Object.values(importPreview).reduce((a, b) => a + b, 0);
+        
+        const confirmMessage = `Import ${totalToImport} records?\n\n` +
+          `Customers: ${importPreview.customers}\n` +
+          `Brokers: ${importPreview.brokers}\n` +
+          `Company Reps: ${importPreview.companyReps}\n` +
+          `Projects: ${importPreview.projects}\n` +
+          `Receipts: ${importPreview.receipts}\n` +
+          `Interactions: ${importPreview.interactions}\n` +
+          `Inventory: ${importPreview.inventory}\n` +
+          `Commission Payments: ${importPreview.commissionPayments}\n\n` +
+          `Note: Existing records with same IDs will be updated.`;
+
+        if (!window.confirm(confirmMessage)) {
+          showMessage('Import cancelled', 'info');
+          setIsProcessing(false);
+          event.target.value = '';
+          return;
+        }
+
+        showMessage('Importing data to database...', 'info', 0);
+
+        // Send to backend
+        const response = await fetch(`${API_URL}/backup/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(backup)
+        });
+
+        const result = await response.json();
+
+        if (!result.success) {
+          throw new Error(result.error || 'Import failed');
+        }
+
+        // Store import stats
+        setImportStats(result.stats);
+
+        // Build success message
+        const stats = result.stats || {};
+        let successMsg = '✅ Import completed!\n';
+        
+        if (stats.customers) successMsg += `Customers: ${stats.customers.imported} imported, ${stats.customers.skipped} skipped, ${stats.customers.errors} errors\n`;
+        if (stats.brokers) successMsg += `Brokers: ${stats.brokers.imported} imported, ${stats.brokers.skipped} skipped\n`;
+        if (stats.companyReps) successMsg += `Company Reps: ${stats.companyReps.imported} imported\n`;
+        if (stats.projects) successMsg += `Projects: ${stats.projects.imported} imported, ${stats.projects.skipped} skipped\n`;
+        if (stats.receipts) successMsg += `Receipts: ${stats.receipts.imported} imported, ${stats.receipts.skipped} skipped\n`;
+        if (stats.interactions) successMsg += `Interactions: ${stats.interactions.imported} imported\n`;
+        if (stats.inventory) successMsg += `Inventory: ${stats.inventory.imported} imported\n`;
+
+        showMessage(successMsg, 'success', 10000);
+
+        // Refresh app data
+        if (typeof refreshAllData === 'function') {
+          await refreshAllData();
+        } else {
+          // Fallback: reload page after delay
+          setTimeout(() => window.location.reload(), 2000);
+        }
+
       } catch (error) {
-        console.error('Import catch error:', error);
-        showMessage('Import error: ' + (error.message || 'Unknown error occurred'), 'error');
-      } finally {
-        setIsProcessing(false);
-        event.target.value = ''; // Reset file input
+        console.error('Import error:', error);
+        showMessage(`❌ Import failed: ${error.message}`, 'error');
       }
-    };
-    
-    reader.onerror = (error) => {
-      console.error('File read error:', error);
-      showMessage('Failed to read file: ' + (error.target?.error?.message || 'Unknown error'), 'error');
+      
       setIsProcessing(false);
-      event.target.value = '';
     };
-    
-    reader.readAsText(file);
+
+    reader.onerror = () => {
+      showMessage('Failed to read file', 'error');
+      setIsProcessing(false);
+    };
+
+    reader.readAsText(file, 'UTF-8');
+    event.target.value = '';
   };
 
-  const handleRestore = (backupKey, timestamp) => {
-    if (!window.confirm('Are you sure you want to restore from backup created at ' + new Date(timestamp).toLocaleString() + '? Current data will be backed up first.')) {
+  // ==================== CLEAR DATA FUNCTION ====================
+
+  const handleClearAll = async () => {
+    const confirmText = 'DELETE ALL DATA';
+    const userInput = window.prompt(
+      `⚠️ WARNING: This will permanently delete ALL data from the database!\n\n` +
+      `Current data:\n` +
+      `- ${currentStats.customers} Customers\n` +
+      `- ${currentStats.brokers} Brokers\n` +
+      `- ${currentStats.projects} Projects\n` +
+      `- ${currentStats.receipts} Receipts\n` +
+      `- ${currentStats.interactions} Interactions\n` +
+      `- ${currentStats.inventory} Inventory items\n\n` +
+      `This action CANNOT be undone!\n\n` +
+      `Type "${confirmText}" to confirm:`
+    );
+
+    if (userInput !== confirmText) {
+      showMessage('Clear cancelled - confirmation text did not match', 'info');
+      return;
+    }
+
+    // Second confirmation
+    if (!window.confirm('FINAL WARNING: Are you absolutely sure? All data will be permanently deleted.')) {
       return;
     }
 
     setIsProcessing(true);
+    showMessage('Clearing all data...', 'info', 0);
+
     try {
-      const result = restoreFromBackup(backupKey);
-      if (result.success) {
-        showMessage('Restore successful! Data has been restored from backup.', 'success');
-        refreshBackupList();
-      } else {
-        showMessage('Restore failed: ' + result.error, 'error');
+      const response = await fetch(`${API_URL}/backup/clear`, {
+        method: 'DELETE'
+      });
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Clear failed');
       }
+
+      showMessage('✅ All data cleared successfully', 'success');
+
+      // Refresh app data
+      if (typeof refreshAllData === 'function') {
+        await refreshAllData();
+      } else {
+        setTimeout(() => window.location.reload(), 1500);
+      }
+
     } catch (error) {
-      showMessage('Restore error: ' + error.message, 'error');
+      console.error('Clear error:', error);
+      showMessage(`❌ Clear failed: ${error.message}`, 'error');
     }
+
     setIsProcessing(false);
   };
 
-  const handleDeleteBackup = (backupKey) => {
-    if (!window.confirm('Delete this backup? This cannot be undone.')) return;
-    
-    const result = deleteBackup(backupKey);
-    if (result.success) {
-      showMessage('Backup deleted', 'success');
-      refreshBackupList();
-    } else {
-      showMessage('Failed to delete: ' + result.error, 'error');
+  // ==================== VERIFY DATA INTEGRITY ====================
+
+  const handleVerifyData = async () => {
+    setIsProcessing(true);
+    showMessage('Verifying data integrity...', 'info', 0);
+
+    try {
+      // Fetch counts from API
+      const endpoints = [
+        'customers', 'brokers', 'company-reps', 'projects', 
+        'receipts', 'interactions', 'inventory', 'commission-payments'
+      ];
+
+      const counts = {};
+      const issues = [];
+
+      for (const endpoint of endpoints) {
+        try {
+          const response = await fetch(`${API_URL}/${endpoint}`);
+          const result = await response.json();
+          const key = endpoint.replace('-', '');
+          counts[key] = result.data?.length || 0;
+        } catch (err) {
+          issues.push(`Failed to fetch ${endpoint}: ${err.message}`);
+        }
+      }
+
+      // Compare with context
+      const contextCounts = {
+        customers: customers?.length || 0,
+        brokers: brokers?.length || 0,
+        companyreps: companyReps?.length || 0,
+        projects: projects?.length || 0,
+        receipts: receipts?.length || 0,
+        interactions: interactions?.length || 0,
+        inventory: inventory?.length || 0,
+        commissionpayments: commissionPayments?.length || 0,
+      };
+
+      let mismatches = [];
+      for (const [key, dbCount] of Object.entries(counts)) {
+        const ctxCount = contextCounts[key] || 0;
+        if (dbCount !== ctxCount) {
+          mismatches.push(`${key}: DB=${dbCount}, UI=${ctxCount}`);
+        }
+      }
+
+      if (issues.length > 0) {
+        showMessage(`⚠️ Verification issues:\n${issues.join('\n')}`, 'error', 10000);
+      } else if (mismatches.length > 0) {
+        showMessage(
+          `⚠️ Data mismatch detected:\n${mismatches.join('\n')}\n\nTry refreshing the page.`, 
+          'error', 
+          10000
+        );
+      } else {
+        showMessage(`✅ Data integrity verified! All ${Object.values(counts).reduce((a,b)=>a+b,0)} records match.`, 'success');
+      }
+
+    } catch (error) {
+      showMessage(`❌ Verification failed: ${error.message}`, 'error');
     }
+
+    setIsProcessing(false);
   };
 
-  const handleCleanup = () => {
-    if (!window.confirm('This will delete all but the 5 most recent backups. Continue?')) return;
-    
-    const count = cleanupOldBackups(5);
-    showMessage('Cleaned up ' + count + ' old backups', 'success');
-    refreshBackupList();
-  };
-
-  const handleClearAll = () => {
-    const result = clearAllData();
-    if (result) {
-      showMessage('All data cleared. A backup was created before clearing.', 'success');
-      refreshBackupList();
-    }
-  };
+  // ==================== FORMAT HELPERS ====================
 
   const formatDate = (dateStr) => {
+    if (!dateStr) return 'Never';
     return new Date(dateStr).toLocaleString('en-PK', {
       year: 'numeric',
       month: 'short',
@@ -197,24 +400,7 @@ export default function BackupManager({ onClose }) {
     });
   };
 
-  const getBackupTypeStyle = (type) => {
-    switch (type) {
-      case 'manual': return { bg: '#dbeafe', text: '#1e40af' };
-      case 'auto': return { bg: '#dcfce7', text: '#166534' };
-      case 'pre-import': return { bg: '#fef3c7', text: '#92400e' };
-      case 'pre-restore': return { bg: '#fce7f3', text: '#9d174d' };
-      case 'pre-clear': return { bg: '#fee2e2', text: '#991b1b' };
-      default: return { bg: '#f3f4f6', text: '#374151' };
-    }
-  };
-
-  const currentStats = {
-    customers: customers?.length || 0,
-    projects: projects?.length || 0,
-    receipts: receipts?.length || 0,
-    inventory: inventory?.length || 0,
-    interactions: interactions?.length || 0
-  };
+  // ==================== RENDER ====================
 
   return (
     <div style={styles.overlay} onClick={onClose}>
@@ -224,10 +410,16 @@ export default function BackupManager({ onClose }) {
           <div>
             <h2 style={styles.title}>💾 Backup & Data Management</h2>
             <p style={styles.subtitle}>
-              Last saved: {lastSaved ? formatDate(lastSaved) : 'Never'} • 
-              Status: <span style={{ color: saveStatus === 'saved' ? '#10b981' : saveStatus === 'saving' ? '#f59e0b' : '#ef4444' }}>
-                {saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'saving' ? '⏳ Saving...' : '⚠️ Error'}
+              Database: {' '}
+              <span style={{ 
+                color: apiStatus.connected ? '#10b981' : '#ef4444',
+                fontWeight: 600
+              }}>
+                {apiStatus.checked 
+                  ? (apiStatus.connected ? '✓ Connected' : '✗ Disconnected') 
+                  : 'Checking...'}
               </span>
+              {' '} • Total Records: <strong>{totalRecords.toLocaleString()}</strong>
             </p>
           </div>
           <button style={styles.closeBtn} onClick={onClose}>×</button>
@@ -237,546 +429,264 @@ export default function BackupManager({ onClose }) {
         {message && (
           <div style={{
             ...styles.message,
-            backgroundColor: message.type === 'success' ? '#dcfce7' : '#fee2e2',
-            color: message.type === 'success' ? '#166534' : '#991b1b'
+            backgroundColor: message.type === 'success' ? '#dcfce7' : 
+                            message.type === 'error' ? '#fee2e2' : '#dbeafe',
+            color: message.type === 'success' ? '#166534' : 
+                   message.type === 'error' ? '#991b1b' : '#1e40af',
+            whiteSpace: 'pre-line'
           }}>
-            {message.type === 'success' ? '✓' : '⚠️'} {message.text}
+            {message.text}
           </div>
         )}
 
         {/* Tabs */}
         <div style={styles.tabs}>
-          {['overview', 'backups', 'import-export', 'settings', 'debug'].map(tab => (
+          {[
+            { id: 'overview', icon: '📊', label: 'Overview' },
+            { id: 'export', icon: '📤', label: 'Export' },
+            { id: 'import', icon: '📥', label: 'Import' },
+            { id: 'danger', icon: '⚠️', label: 'Danger Zone' }
+          ].map(tab => (
             <button
-              key={tab}
+              key={tab.id}
               style={{
                 ...styles.tab,
-                ...(activeTab === tab ? styles.tabActive : {})
+                ...(activeTab === tab.id ? styles.tabActive : {})
               }}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => setActiveTab(tab.id)}
             >
-              {tab === 'overview' && '📊'} 
-              {tab === 'backups' && '📁'} 
-              {tab === 'import-export' && '📤'} 
-              {tab === 'settings' && '⚙️'} 
-              {tab === 'debug' && '🐛'} 
-              {' '}{tab === 'import-export' ? 'Import/Export' : tab.charAt(0).toUpperCase() + tab.slice(1)}
-    </button>
-  ))}
-</div>
+              {tab.icon} {tab.label}
+            </button>
+          ))}
+        </div>
 
         {/* Content */}
         <div style={styles.content}>
+          
           {/* Overview Tab */}
           {activeTab === 'overview' && (
             <div style={styles.tabContent}>
-              {/* Storage Info */}
               <div style={styles.section}>
-                <h3 style={styles.sectionTitle}>📦 Storage Usage</h3>
-                {storageInfo ? (
-                  <div style={styles.storageCard}>
-                    <div style={styles.storageBar}>
-                      <div 
-                        style={{
-                          ...styles.storageBarFill,
-                          width: Math.min(parseFloat(storageInfo.percentUsed), 100) + '%',
-                          backgroundColor: parseFloat(storageInfo.percentUsed) > 80 ? '#ef4444' : 
-                                          parseFloat(storageInfo.percentUsed) > 50 ? '#f59e0b' : '#10b981'
-                        }}
-                      />
-                    </div>
-                    <p style={styles.storageText}>
-                      {storageInfo.usedFormatted} used of ~{storageInfo.estimatedMaxFormatted} ({storageInfo.percentUsed}%)
-                    </p>
-                    <p style={styles.storageSubtext}>
-                      CRM Data: {storageInfo.crmDataSizeFormatted}
-                    </p>
-                  </div>
-                ) : (
-                  <p>Loading storage info...</p>
-                )}
-              </div>
-
-              {/* Current Data Stats */}
-              <div style={styles.section}>
-                <h3 style={styles.sectionTitle}>📊 Current Data</h3>
+                <h3 style={styles.sectionTitle}>📊 Current Database Records</h3>
                 <div style={styles.statsGrid}>
-                  <div style={styles.statItem}>
-                    <span style={styles.statValue}>{currentStats.customers}</span>
-                    <span style={styles.statLabel}>Customers</span>
-                  </div>
-                  <div style={styles.statItem}>
-                    <span style={styles.statValue}>{currentStats.projects}</span>
-                    <span style={styles.statLabel}>Transactions</span>
-                  </div>
-                  <div style={styles.statItem}>
-                    <span style={styles.statValue}>{currentStats.receipts}</span>
-                    <span style={styles.statLabel}>Receipts</span>
-                  </div>
-                  <div style={styles.statItem}>
-                    <span style={styles.statValue}>{currentStats.inventory}</span>
-                    <span style={styles.statLabel}>Inventory</span>
-                  </div>
-                  <div style={styles.statItem}>
-                    <span style={styles.statValue}>{currentStats.interactions}</span>
-                    <span style={styles.statLabel}>Interactions</span>
-                  </div>
+                  {[
+                    { label: 'Customers', value: currentStats.customers, icon: '👥' },
+                    { label: 'Brokers', value: currentStats.brokers, icon: '🤝' },
+                    { label: 'Company Reps', value: currentStats.companyReps, icon: '👔' },
+                    { label: 'Projects', value: currentStats.projects, icon: '📋' },
+                    { label: 'Receipts', value: currentStats.receipts, icon: '🧾' },
+                    { label: 'Interactions', value: currentStats.interactions, icon: '💬' },
+                    { label: 'Inventory', value: currentStats.inventory, icon: '📦' },
+                    { label: 'Commissions', value: currentStats.commissionPayments, icon: '💰' },
+                  ].map(stat => (
+                    <div key={stat.label} style={styles.statItem}>
+                      <span style={styles.statIcon}>{stat.icon}</span>
+                      <span style={styles.statValue}>{stat.value}</span>
+                      <span style={styles.statLabel}>{stat.label}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              {/* Quick Actions */}
+              <div style={styles.section}>
+                <h3 style={styles.sectionTitle}>🔍 Data Verification</h3>
+                <p style={styles.sectionDesc}>
+                  Verify that the data in your browser matches the database.
+                </p>
+                <button 
+                  style={styles.actionBtn}
+                  onClick={handleVerifyData}
+                  disabled={isProcessing || !apiStatus.connected}
+                >
+                  🔍 Verify Data Integrity
+                </button>
+              </div>
+
               <div style={styles.section}>
                 <h3 style={styles.sectionTitle}>⚡ Quick Actions</h3>
                 <div style={styles.actionButtons}>
                   <button 
                     style={styles.actionBtn}
-                    onClick={handleCreateBackup}
-                    disabled={isProcessing}
+                    onClick={handleExport}
+                    disabled={isProcessing || !apiStatus.connected}
                   >
-                    💾 Create Backup Now
+                    📤 Export Backup
                   </button>
                   <button 
                     style={styles.actionBtnSecondary}
-                    onClick={handleExport}
+                    onClick={handleImportClick}
+                    disabled={isProcessing || !apiStatus.connected}
+                  >
+                    📥 Import Backup
+                  </button>
+                  <button 
+                    style={styles.actionBtnSecondary}
+                    onClick={checkApiConnection}
                     disabled={isProcessing}
                   >
-                    📤 Export to File
+                    🔄 Refresh Status
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Backups Tab */}
-          {activeTab === 'backups' && (
+          {/* Export Tab */}
+          {activeTab === 'export' && (
             <div style={styles.tabContent}>
-              <div style={styles.backupHeader}>
-                <h3 style={styles.sectionTitle}>📁 Saved Backups ({backups.length})</h3>
-                <div style={styles.backupActions}>
-                  <button 
-                    style={styles.smallBtn}
-                    onClick={handleCreateBackup}
-                    disabled={isProcessing}
-                  >
-                    + New Backup
-                  </button>
-                  <button 
-                    style={styles.smallBtnDanger}
-                    onClick={handleCleanup}
-                    disabled={isProcessing || backups.length <= 5}
-                  >
-                    🧹 Cleanup Old
-                  </button>
-                </div>
-              </div>
-
-              {backups.length === 0 ? (
-                <div style={styles.emptyState}>
-                  <span style={styles.emptyIcon}>📁</span>
-                  <p>No backups yet</p>
-                  <p style={styles.emptySubtext}>Backups are created automatically every 5 minutes and after significant changes.</p>
-                </div>
-              ) : (
-                <div style={styles.backupList}>
-                  {backups.map((backup) => {
-                    const typeStyle = getBackupTypeStyle(backup.type);
-                    return (
-                      <div key={backup.key} style={styles.backupItem}>
-                        <div style={styles.backupInfo}>
-                          <div style={styles.backupMeta}>
-                            <span style={{
-                              ...styles.backupType,
-                              backgroundColor: typeStyle.bg,
-                              color: typeStyle.text
-                            }}>
-                              {backup.type}
-                            </span>
-                            <span style={styles.backupDate}>{formatDate(backup.timestamp)}</span>
-                            <span style={styles.backupSize}>{backup.sizeFormatted}</span>
-                          </div>
-                          <div style={styles.backupCounts}>
-                            {backup.recordCounts && (
-                              <>
-                                <span>👥 {backup.recordCounts.customers}</span>
-                                <span>📋 {backup.recordCounts.projects}</span>
-                                <span>🧾 {backup.recordCounts.receipts}</span>
-                                <span>📦 {backup.recordCounts.inventory}</span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <div style={styles.backupBtns}>
-                          <button
-                            style={styles.restoreBtn}
-                            onClick={() => handleRestore(backup.key, backup.timestamp)}
-                            disabled={isProcessing}
-                          >
-                            ↩️ Restore
-                          </button>
-                          <button
-                            style={styles.deleteBtn}
-                            onClick={() => handleDeleteBackup(backup.key)}
-                            disabled={isProcessing}
-                          >
-                            🗑️
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Import/Export Tab */}
-          {activeTab === 'import-export' && (
-            <div style={styles.tabContent}>
-              {/* Export Section */}
               <div style={styles.section}>
-                <h3 style={styles.sectionTitle}>📤 Export Data</h3>
+                <h3 style={styles.sectionTitle}>📤 Export Database Backup</h3>
                 <p style={styles.sectionDesc}>
-                  Download your complete CRM data as a JSON file. Use this for external backups or to transfer data.
+                  Download a complete backup of all CRM data as a JSON file. 
+                  This file can be used to restore data or transfer to another system.
                 </p>
+
+                <div style={styles.exportInfo}>
+                  <h4>Data to be exported:</h4>
+                  <ul style={styles.exportList}>
+                    <li>✓ {currentStats.customers} Customers</li>
+                    <li>✓ {currentStats.brokers} Brokers</li>
+                    <li>✓ {currentStats.companyReps} Company Representatives</li>
+                    <li>✓ {currentStats.projects} Projects/Transactions</li>
+                    <li>✓ {currentStats.receipts} Receipts</li>
+                    <li>✓ {currentStats.interactions} Interactions</li>
+                    <li>✓ {currentStats.inventory} Inventory Items</li>
+                    <li>✓ {currentStats.commissionPayments} Commission Payments</li>
+                    <li>✓ System Settings</li>
+                  </ul>
+                </div>
+
                 <button 
-                  style={styles.actionBtn}
+                  style={{ ...styles.actionBtn, marginTop: '16px' }}
                   onClick={handleExport}
-                  disabled={isProcessing}
+                  disabled={isProcessing || !apiStatus.connected}
                 >
-                  📥 Download Backup File
+                  {isProcessing ? '⏳ Exporting...' : '📥 Download Backup File'}
                 </button>
+
+                {lastExport && (
+                  <div style={styles.lastExport}>
+                    <p><strong>Last Export:</strong></p>
+                    <p>📁 {lastExport.filename}</p>
+                    <p>🕐 {formatDate(lastExport.timestamp)}</p>
+                    <p>📊 {Object.values(lastExport.stats).reduce((a,b)=>a+b,0)} records</p>
+                  </div>
+                )}
               </div>
 
-              {/* Import Section */}
-              <div style={styles.section}>
-                <h3 style={styles.sectionTitle}>📥 Import Data</h3>
-                <p style={styles.sectionDesc}>
-                  Restore from a previously exported JSON backup file. Your current data will be backed up automatically before import.
-                </p>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".json"
-                  onChange={handleImport}
-                  style={{ display: 'none' }}
-                />
-                <button 
-                  style={styles.actionBtnSecondary}
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isProcessing}
-                >
-                  📂 Select File to Import
-                </button>
-              </div>
-
-              {/* Import Tips */}
               <div style={styles.tipsBox}>
-                <h4 style={styles.tipsTitle}>💡 Import Tips</h4>
+                <h4 style={styles.tipsTitle}>💡 Export Best Practices</h4>
                 <ul style={styles.tipsList}>
-                  <li>Only import files exported from Sitara CRM</li>
-                  <li>A backup of current data is created before import</li>
-                  <li>Duplicate IDs will be detected and warned</li>
-                  <li>You can restore previous state from Backups tab if needed</li>
+                  <li>Export backups regularly (daily recommended)</li>
+                  <li>Store backups in multiple locations</li>
+                  <li>Test restore process periodically</li>
+                  <li>Keep at least 7 days of backups</li>
                 </ul>
               </div>
             </div>
           )}
 
-          {/* Settings Tab */}
-          {activeTab === 'settings' && (
+          {/* Import Tab */}
+          {activeTab === 'import' && (
             <div style={styles.tabContent}>
-              {/* Auto-backup Info */}
               <div style={styles.section}>
-                <h3 style={styles.sectionTitle}>⏰ Auto-Backup</h3>
-                <div style={styles.settingItem}>
-                  <span>Auto-backup interval</span>
-                  <span style={styles.settingValue}>Every 5 minutes</span>
-                </div>
-                <div style={styles.settingItem}>
-                  <span>Max backups retained</span>
-                  <span style={styles.settingValue}>10 backups</span>
-                </div>
-                <div style={styles.settingItem}>
-                  <span>Backup on changes</span>
-                  <span style={styles.settingValue}>Every 50 changes</span>
-                </div>
+                <h3 style={styles.sectionTitle}>📥 Import Backup Data</h3>
+                <p style={styles.sectionDesc}>
+                  Restore data from a previously exported JSON backup file. 
+                  Existing records with matching IDs will be updated (upsert).
+                </p>
+
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json"
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                />
+
+                <button 
+                  style={{ ...styles.actionBtn, marginTop: '16px' }}
+                  onClick={handleImportClick}
+                  disabled={isProcessing || !apiStatus.connected}
+                >
+                  {isProcessing ? '⏳ Importing...' : '📂 Select Backup File'}
+                </button>
               </div>
-              {activeTab === 'debug' && (
-  <div style={styles.tabContent}>
-    <h3 style={styles.sectionTitle}>🐛 Debug Information</h3>
-    
-    {/* Get all available functions */}
-    <div style={{ 
-      fontSize: '12px', 
-      fontFamily: 'monospace', 
-      backgroundColor: '#f1f5f9', 
-      padding: '12px', 
-      borderRadius: '6px',
-      marginBottom: '16px'
-    }}>
-      <p style={{ fontWeight: 'bold', marginBottom: '8px' }}>Available functions from context:</p>
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(3, 1fr)', 
-        gap: '4px',
-        maxHeight: '200px',
-        overflowY: 'auto'
-      }}>
-        {Object.keys({
-          storageInfo,
-          lastSaved,
-          saveStatus,
-          createManualBackup,
-          getBackupList,
-          restoreFromBackup,
-          deleteBackup,
-          cleanupOldBackups,
-          importBackup,
-          exportData,
-          exportToFile,
-          clearAllData,
-          customers,
-          projects,
-          receipts,
-          inventory,
-          interactions
-        }).map(key => (
-          <div key={key} style={{
-            padding: '4px 8px',
-            backgroundColor: '#ffffff',
-            borderRadius: '4px',
-            border: '1px solid #e2e8f0',
-            fontSize: '11px'
-          }}>
-            {key}: {typeof eval(key) === 'function' ? 'function' : typeof eval(key)}
-          </div>
-        ))}
-      </div>
-    </div>
 
+              {importStats && (
+                <div style={styles.importResults}>
+                  <h4>Last Import Results:</h4>
+                  <table style={styles.statsTable}>
+                    <thead>
+                      <tr>
+                        <th>Entity</th>
+                        <th>Imported</th>
+                        <th>Skipped</th>
+                        <th>Errors</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(importStats).map(([key, stats]) => (
+                        <tr key={key}>
+                          <td>{key}</td>
+                          <td style={{ color: '#10b981' }}>{stats.imported || 0}</td>
+                          <td style={{ color: '#f59e0b' }}>{stats.skipped || 0}</td>
+                          <td style={{ color: '#ef4444' }}>{stats.errors || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
- {/* Backup Information */}
- <div style={{ 
-      fontSize: '12px', 
-      fontFamily: 'monospace', 
-      backgroundColor: '#f1f5f9', 
-      padding: '12px', 
-      borderRadius: '6px',
-      marginBottom: '16px'
-    }}>
-      <p style={{ fontWeight: 'bold', marginBottom: '8px' }}>Backup Information:</p>
-      <p>Backup count: {backups.length}</p>
-      <p>Last backup: {backups[0] ? formatDate(backups[0].timestamp) : 'None'}</p>
-      <p>Current data stats: {JSON.stringify(currentStats)}</p>
-      <p>Save status: {saveStatus}</p>
-      <p>Last saved: {lastSaved ? formatDate(lastSaved) : 'Never'}</p>
-    </div>
- {/* Storage Information */}
- {storageInfo && (
-      <div style={{ 
-        fontSize: '12px', 
-        fontFamily: 'monospace', 
-        backgroundColor: '#f1f5f9', 
-        padding: '12px', 
-        borderRadius: '6px',
-        marginBottom: '16px'
-      }}>
-        <p style={{ fontWeight: 'bold', marginBottom: '8px' }}>Storage Information:</p>
-        <p>Used: {storageInfo.usedFormatted} ({storageInfo.percentUsed}%)</p>
-        <p>CRM Data: {storageInfo.crmDataSizeFormatted}</p>
-        <p>Items in localStorage: {storageInfo.itemCount}</p>
-      </div>
-    )}
-
-    {/* Test Buttons */}
-    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-      <button 
-        style={{ 
-          padding: '8px 16px',
-          backgroundColor: '#f1f5f9',
-          border: '1px solid #e2e8f0',
-          borderRadius: '6px',
-          fontSize: '12px',
-          cursor: 'pointer'
-        }}
-        onClick={() => {
-          console.log('Backup Manager Debug:', {
-            contextFunctions: {
-              storageInfo,
-              lastSaved,
-              saveStatus,
-              createManualBackup: typeof createManualBackup,
-              getBackupList: typeof getBackupList,
-              restoreFromBackup: typeof restoreFromBackup,
-              deleteBackup: typeof deleteBackup,
-              cleanupOldBackups: typeof cleanupOldBackups,
-              importBackup: typeof importBackup,
-              exportData: typeof exportData,
-              exportToFile: typeof exportToFile,
-              clearAllData: typeof clearAllData
-            },
-            backups: backups,
-            currentStats: currentStats,
-            storageInfo: storageInfo
-          });
-          showMessage('Debug info logged to console', 'success');
-        }}
-      >
-        Log Debug Info to Console
-      </button>
-
-      <button 
-        style={{ 
-          padding: '8px 16px',
-          backgroundColor: '#dbeafe',
-          border: '1px solid #93c5fd',
-          borderRadius: '6px',
-          fontSize: '12px',
-          cursor: 'pointer'
-        }}
-        onClick={() => {
-          // Test if createManualBackup works
-          if (typeof createManualBackup === 'function') {
-            const result = createManualBackup();
-            console.log('Manual backup result:', result);
-            if (result && result.success) {
-              showMessage('Test backup created successfully!', 'success');
-              refreshBackupList();
-            } else {
-              showMessage('Test backup failed: ' + (result?.error || 'Unknown error'), 'error');
-            }
-          } else {
-            showMessage('createManualBackup function not available', 'error');
-          }
-        }}
-      >
-        Test Create Backup
-      </button>
-
-      <button 
-        style={{ 
-          padding: '8px 16px',
-          backgroundColor: '#dcfce7',
-          border: '1px solid #86efac',
-          borderRadius: '6px',
-          fontSize: '12px',
-          cursor: 'pointer'
-        }}
-        onClick={() => {
-          // Test if exportToFile works
-          if (typeof exportToFile === 'function') {
-            try {
-              const result = exportToFile();
-              console.log('Export result:', result);
-              if (result && result.success) {
-                showMessage('Test export successful!', 'success');
-              } else {
-                showMessage('Test export failed: ' + (result?.error || 'Unknown error'), 'error');
-              }
-            } catch (error) {
-              showMessage('Export error: ' + error.message, 'error');
-            }
-          } else {
-            showMessage('exportToFile function not available', 'error');
-          }
-        }}
-      >
-        Test Export
-      </button>
-    </div>
-
-    {/* Test Import */}
-    <div style={{ marginBottom: '16px' }}>
-      <h4 style={{ fontSize: '14px', marginBottom: '8px' }}>Test Import:</h4>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".json"
-        onChange={handleImport}
-        style={{ display: 'none' }}
-      />
-      <button 
-        style={{ 
-          padding: '8px 16px',
-          backgroundColor: '#fef3c7',
-          border: '1px solid #fde68a',
-          borderRadius: '6px',
-          fontSize: '12px',
-          cursor: 'pointer'
-        }}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        Test Import Backup File
-      </button>
-    </div>
-
-    {/* Local Storage Info */}
-    <div style={{ 
-      fontSize: '12px', 
-      fontFamily: 'monospace', 
-      backgroundColor: '#f1f5f9', 
-      padding: '12px', 
-      borderRadius: '6px'
-    }}>
-      <p style={{ fontWeight: 'bold', marginBottom: '8px' }}>LocalStorage Keys:</p>
-      <div style={{ 
-        maxHeight: '150px',
-        overflowY: 'auto',
-        backgroundColor: '#ffffff',
-        padding: '8px',
-        borderRadius: '4px',
-        border: '1px solid #e2e8f0'
-      }}>
-        {(() => {
-          try {
-            const keys = [];
-            for (let i = 0; i < localStorage.length; i++) {
-              keys.push(localStorage.key(i));
-            }
-            return keys.map((key, index) => (
-              <div key={index} style={{ 
-                padding: '4px 0',
-                borderBottom: index < keys.length - 1 ? '1px solid #f1f5f9' : 'none'
-              }}>
-                {key}: {localStorage.getItem(key)?.length || 0} chars
+              <div style={styles.warningBox}>
+                <h4 style={styles.warningTitle}>⚠️ Important Notes</h4>
+                <ul style={styles.warningList}>
+                  <li>Only import files exported from Sitara CRM</li>
+                  <li>Records with matching IDs will be <strong>overwritten</strong></li>
+                  <li>Orphaned records (referencing non-existent parents) will be skipped</li>
+                  <li>Large imports may take several minutes</li>
+                </ul>
               </div>
-            ));
-          } catch (error) {
-            return <div>Error reading localStorage: {error.message}</div>;
-          }
-        })()}
-      </div>
-    </div>
-  </div>
-)}
+            </div>
+          )}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-              {/* Danger Zone */}
+          {/* Danger Zone Tab */}
+          {activeTab === 'danger' && (
+            <div style={styles.tabContent}>
               <div style={styles.dangerSection}>
                 <h3 style={styles.dangerTitle}>⚠️ Danger Zone</h3>
                 <p style={styles.dangerDesc}>
-                  Clear all data from the CRM. A backup will be created before clearing. This action cannot be undone without restoring from a backup.
+                  The following actions are destructive and cannot be undone. 
+                  Please ensure you have a backup before proceeding.
                 </p>
-                <button 
-                  style={styles.dangerBtn}
-                  onClick={handleClearAll}
-                  disabled={isProcessing}
-                >
-                  🗑️ Clear All Data
-                </button>
+
+                <div style={styles.dangerAction}>
+                  <div>
+                    <h4 style={styles.dangerActionTitle}>🗑️ Clear All Data</h4>
+                    <p style={styles.dangerActionDesc}>
+                      Permanently delete ALL data from the database. This includes all customers, 
+                      brokers, projects, receipts, and other records. This action cannot be reversed.
+                    </p>
+                  </div>
+                  <button 
+                    style={styles.dangerBtn}
+                    onClick={handleClearAll}
+                    disabled={isProcessing || !apiStatus.connected}
+                  >
+                    🗑️ Clear All Data
+                  </button>
+                </div>
+
+                <div style={styles.dangerWarning}>
+                  <p><strong>Before clearing data:</strong></p>
+                  <ol style={styles.dangerSteps}>
+                    <li>Go to the Export tab and download a backup</li>
+                    <li>Verify the backup file contains all your data</li>
+                    <li>Store the backup in a safe location</li>
+                    <li>Then return here to clear data</li>
+                  </ol>
+                </div>
               </div>
             </div>
           )}
@@ -785,14 +695,16 @@ export default function BackupManager({ onClose }) {
         {/* Processing Overlay */}
         {isProcessing && (
           <div style={styles.processingOverlay}>
-            <div style={styles.processingSpinner}>⏳</div>
-            <p>Processing...</p>
+            <div style={styles.spinner}>⏳</div>
+            <p style={styles.processingText}>Processing... Please wait</p>
           </div>
         )}
       </div>
     </div>
   );
 }
+
+// ==================== STYLES ====================
 
 const styles = {
   overlay: {
@@ -818,7 +730,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     position: 'relative',
-    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
   },
   header: {
     padding: '20px 24px',
@@ -857,6 +769,7 @@ const styles = {
     display: 'flex',
     borderBottom: '1px solid #e2e8f0',
     padding: '0 16px',
+    overflowX: 'auto',
   },
   tab: {
     padding: '12px 16px',
@@ -867,6 +780,7 @@ const styles = {
     color: '#64748b',
     cursor: 'pointer',
     borderBottom: '2px solid transparent',
+    whiteSpace: 'nowrap',
   },
   tabActive: {
     color: '#6366f1',
@@ -892,51 +806,11 @@ const styles = {
     fontSize: '14px',
     color: '#64748b',
     marginBottom: '12px',
+    lineHeight: '1.5',
   },
-  storageCard: {
-    padding: '16px',
-    backgroundColor: '#f8fafc',
-    borderRadius: '12px',
-  },
-  storageBar: {
-    height: '8px',
-    backgroundColor: '#e2e8f0',
-    borderRadius: '4px',
-    overflow: 'hidden',
-    marginBottom: '8px',
-  },
-  storageBarFill: {
-    height: '100%',
-    borderRadius: '4px',
-    transition: 'width 0.3s ease',
-  },
-  storageText: {
-    fontSize: '14px',
-    fontWeight: '500',
-    color: '#1e293b',
-    margin: 0,
-  },
-  storageSubtext: {
-    fontSize: '13px',
-    color: '#64748b',
-    margin: '4px 0 0',
-  },
-
-  debugContainer: {
-    fontFamily: 'monospace',
-    fontSize: '12px',
-  },
-  debugItem: {
-    marginBottom: '4px',
-    padding: '4px 8px',
-    backgroundColor: '#f8fafc',
-    borderRadius: '4px',
-  },
-
-
   statsGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, 1fr)',
+    gridTemplateColumns: 'repeat(4, 1fr)',
     gap: '12px',
   },
   statItem: {
@@ -944,20 +818,28 @@ const styles = {
     padding: '16px 8px',
     backgroundColor: '#f8fafc',
     borderRadius: '10px',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+  },
+  statIcon: {
+    fontSize: '20px',
   },
   statValue: {
-    display: 'block',
     fontSize: '24px',
     fontWeight: '700',
     color: '#6366f1',
   },
   statLabel: {
-    fontSize: '12px',
+    fontSize: '11px',
     color: '#64748b',
+    textTransform: 'uppercase',
   },
   actionButtons: {
     display: 'flex',
     gap: '12px',
+    flexWrap: 'wrap',
   },
   actionBtn: {
     padding: '12px 24px',
@@ -979,124 +861,31 @@ const styles = {
     fontWeight: '600',
     cursor: 'pointer',
   },
-  backupHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '16px',
-  },
-  backupActions: {
-    display: 'flex',
-    gap: '8px',
-  },
-  smallBtn: {
-    padding: '8px 12px',
-    backgroundColor: '#6366f1',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '13px',
-    fontWeight: '500',
-    cursor: 'pointer',
-  },
-  smallBtnDanger: {
-    padding: '8px 12px',
-    backgroundColor: '#fee2e2',
-    color: '#991b1b',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '13px',
-    fontWeight: '500',
-    cursor: 'pointer',
-  },
-  emptyState: {
-    textAlign: 'center',
-    padding: '40px',
-    color: '#64748b',
-  },
-  emptyIcon: {
-    fontSize: '48px',
-    display: 'block',
-    marginBottom: '12px',
-  },
-  emptySubtext: {
-    fontSize: '13px',
-    color: '#94a3b8',
-    marginTop: '8px',
-  },
-  backupList: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-  },
-  backupItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
+  exportInfo: {
+    padding: '16px',
     backgroundColor: '#f8fafc',
     borderRadius: '10px',
-    border: '1px solid #e2e8f0',
+    marginTop: '16px',
   },
-  backupInfo: {
-    flex: 1,
+  exportList: {
+    margin: '8px 0 0 20px',
+    lineHeight: '1.8',
+    color: '#475569',
   },
-  backupMeta: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    marginBottom: '4px',
-  },
-  backupType: {
-    padding: '2px 8px',
-    borderRadius: '4px',
-    fontSize: '11px',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  backupDate: {
-    fontSize: '14px',
-    fontWeight: '500',
-    color: '#1e293b',
-  },
-  backupSize: {
+  lastExport: {
+    marginTop: '16px',
+    padding: '12px',
+    backgroundColor: '#dcfce7',
+    borderRadius: '8px',
     fontSize: '13px',
-    color: '#64748b',
-  },
-  backupCounts: {
-    display: 'flex',
-    gap: '12px',
-    fontSize: '12px',
-    color: '#64748b',
-  },
-  backupBtns: {
-    display: 'flex',
-    gap: '8px',
-  },
-  restoreBtn: {
-    padding: '6px 12px',
-    backgroundColor: '#dbeafe',
-    color: '#1e40af',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '13px',
-    fontWeight: '500',
-    cursor: 'pointer',
-  },
-  deleteBtn: {
-    padding: '6px 10px',
-    backgroundColor: '#fee2e2',
-    color: '#991b1b',
-    border: 'none',
-    borderRadius: '6px',
-    fontSize: '13px',
-    cursor: 'pointer',
+    color: '#166534',
   },
   tipsBox: {
     padding: '16px',
     backgroundColor: '#fffbeb',
     borderRadius: '10px',
     border: '1px solid #fef3c7',
+    marginTop: '24px',
   },
   tipsTitle: {
     margin: '0 0 8px',
@@ -1111,37 +900,80 @@ const styles = {
     color: '#92400e',
     lineHeight: '1.6',
   },
-  settingItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    padding: '12px 0',
-    borderBottom: '1px solid #f1f5f9',
-    fontSize: '14px',
-    color: '#475569',
+  importResults: {
+    marginTop: '20px',
+    padding: '16px',
+    backgroundColor: '#f8fafc',
+    borderRadius: '10px',
   },
-  settingValue: {
+  statsTable: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '13px',
+    marginTop: '8px',
+  },
+  warningBox: {
+    padding: '16px',
+    backgroundColor: '#fef3c7',
+    borderRadius: '10px',
+    border: '1px solid #fde68a',
+    marginTop: '24px',
+  },
+  warningTitle: {
+    margin: '0 0 8px',
+    fontSize: '14px',
     fontWeight: '600',
-    color: '#1e293b',
+    color: '#92400e',
+  },
+  warningList: {
+    margin: 0,
+    paddingLeft: '20px',
+    fontSize: '13px',
+    color: '#92400e',
+    lineHeight: '1.6',
   },
   dangerSection: {
-    padding: '20px',
+    padding: '24px',
     backgroundColor: '#fef2f2',
     borderRadius: '12px',
     border: '1px solid #fecaca',
   },
   dangerTitle: {
-    margin: '0 0 8px',
-    fontSize: '16px',
+    margin: '0 0 12px',
+    fontSize: '18px',
     fontWeight: '600',
     color: '#991b1b',
   },
   dangerDesc: {
     fontSize: '14px',
     color: '#991b1b',
+    marginBottom: '24px',
+    lineHeight: '1.5',
+  },
+  dangerAction: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '16px',
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    border: '1px solid #fecaca',
     marginBottom: '16px',
   },
+  dangerActionTitle: {
+    margin: '0 0 4px',
+    fontSize: '14px',
+    fontWeight: '600',
+    color: '#991b1b',
+  },
+  dangerActionDesc: {
+    margin: 0,
+    fontSize: '13px',
+    color: '#7f1d1d',
+    maxWidth: '400px',
+  },
   dangerBtn: {
-    padding: '12px 24px',
+    padding: '10px 20px',
     backgroundColor: '#dc2626',
     color: '#fff',
     border: 'none',
@@ -1149,6 +981,18 @@ const styles = {
     fontSize: '14px',
     fontWeight: '600',
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  dangerWarning: {
+    padding: '12px',
+    backgroundColor: '#fff',
+    borderRadius: '8px',
+    fontSize: '13px',
+    color: '#7f1d1d',
+  },
+  dangerSteps: {
+    margin: '8px 0 0 20px',
+    lineHeight: '1.8',
   },
   processingOverlay: {
     position: 'absolute',
@@ -1156,15 +1000,20 @@ const styles = {
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(255,255,255,0.9)',
+    backgroundColor: 'rgba(255,255,255,0.95)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
   },
-  processingSpinner: {
+  spinner: {
     fontSize: '48px',
     animation: 'spin 1s linear infinite',
+  },
+  processingText: {
+    marginTop: '12px',
+    fontSize: '14px',
+    color: '#64748b',
   },
 };
