@@ -50,6 +50,7 @@ const Dashboard = () => {
 
   // Forecast view toggle
   const [forecastView, setForecastView] = useState('monthly'); // 'monthly' | 'quarterly'
+  const [expandedCustomer, setExpandedCustomer] = useState(null); // For overdue section
 
   // ========== FINANCIAL METRICS ==========
   const financials = useMemo(() => {
@@ -181,6 +182,119 @@ const Dashboard = () => {
     return { overdueAmount, futureAmount, overdueCount };
   }, [projects]);
 
+  // ========== OVERDUE BY CUSTOMER - DETAILED TRACKING ==========
+  const overdueByCustomer = useMemo(() => {
+    const customerOverdue = {};
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const getCycleMonths = (cycle) => {
+      const cycles = { monthly: 1, quarterly: 3, bi_annual: 6, biannual: 6, semi_annual: 6, annual: 12, yearly: 12 };
+      return cycles[cycle] || 6;
+    };
+
+    projects.forEach(project => {
+      const customerId = project.customerId || project.customer_id;
+      if (!customerId) return;
+
+      const sale = parseFloat(project.sale) || parseFloat(project.saleValue) || 0;
+      const received = parseFloat(project.received) || parseFloat(project.totalReceived) || 0;
+      const totalReceivable = sale - received;
+
+      if (totalReceivable <= 0) return;
+
+      // Initialize customer entry if not exists
+      if (!customerOverdue[customerId]) {
+        const customer = customers.find(c => String(c.id) === String(customerId));
+        customerOverdue[customerId] = {
+          customerId,
+          customerName: customer?.name || project.customerName || 'Unknown',
+          customerPhone: customer?.phone || '',
+          totalOverdue: 0,
+          overdueInstallments: [],
+          projectCount: 0
+        };
+      }
+
+      // Get installments
+      let installments = project.installments;
+      if (typeof installments === 'string') {
+        try { installments = JSON.parse(installments); } catch { installments = null; }
+      }
+
+      // Track overdue from JSONB array OR generated schedule
+      if (Array.isArray(installments) && installments.length > 0 && installments[0]?.dueDate) {
+        installments.forEach((inst, idx) => {
+          const dueDate = inst.dueDate || inst.due_date;
+          if (!dueDate) return;
+
+          const due = new Date(dueDate);
+          due.setHours(0, 0, 0, 0);
+
+          const amount = parseFloat(inst.amount) || 0;
+          const paid = inst.paid === true || inst.paid === 'true';
+          const partialPaid = parseFloat(inst.partialPaid || inst.partial_paid) || 0;
+          const remaining = paid ? 0 : (amount - partialPaid);
+
+          if (remaining > 0 && due < today) {
+            customerOverdue[customerId].totalOverdue += remaining;
+            customerOverdue[customerId].overdueInstallments.push({
+              projectId: project.id,
+              projectName: project.name || project.projectName,
+              unit: project.unit || project.unitNumber,
+              installmentNumber: idx + 1,
+              dueDate: dueDate,
+              amount: remaining,
+              daysOverdue: Math.floor((today - due) / (1000 * 60 * 60 * 24))
+            });
+          }
+        });
+      } else {
+        // Generate schedule from first_due_date
+        const firstDue = project.first_due_date || project.firstDueDate || project.nextDue || project.nextDueDate;
+        if (!firstDue) return;
+
+        const installmentCount = parseInt(project.installment_count) || parseInt(project.installmentCount) || 
+                                 (typeof installments === 'number' ? installments : 4);
+        const cycleMonths = getCycleMonths(project.payment_cycle || project.paymentCycle || project.cycle);
+        const installmentAmount = sale / installmentCount;
+        let remaining = received;
+
+        for (let i = 0; i < installmentCount; i++) {
+          const dueDate = new Date(firstDue);
+          dueDate.setMonth(dueDate.getMonth() + (i * cycleMonths));
+          dueDate.setHours(0, 0, 0, 0);
+
+          const paid = Math.min(remaining, installmentAmount);
+          remaining -= paid;
+          const dueAmount = installmentAmount - paid;
+
+          if (dueAmount > 0 && dueDate < today) {
+            customerOverdue[customerId].totalOverdue += dueAmount;
+            customerOverdue[customerId].overdueInstallments.push({
+              projectId: project.id,
+              projectName: project.name || project.projectName,
+              unit: project.unit || project.unitNumber,
+              installmentNumber: i + 1,
+              dueDate: dueDate.toISOString().split('T')[0],
+              amount: dueAmount,
+              daysOverdue: Math.floor((today - dueDate) / (1000 * 60 * 60 * 24))
+            });
+          }
+        }
+      }
+
+      if (customerOverdue[customerId].overdueInstallments.length > 0) {
+        customerOverdue[customerId].projectCount++;
+      }
+    });
+
+    // Convert to array, filter out those with no overdue, sort by total overdue desc
+    return Object.values(customerOverdue)
+      .filter(c => c.totalOverdue > 0)
+      .sort((a, b) => b.totalOverdue - a.totalOverdue);
+  }, [projects, customers]);
+
   // ========== EXPECTED RECEIVABLES FORECAST ==========
   const receivablesForecast = useMemo(() => {
     const today = new Date();
@@ -281,12 +395,14 @@ const Dashboard = () => {
       }
     });
 
-    // Sort and return
+    // Sort and return - ONLY FUTURE DATES
     const sortedMonths = Object.entries(monthlyData)
+      .filter(([key, data]) => !data.isPast) // Only future
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(0, 12);
 
     const sortedQuarters = Object.entries(quarterlyData)
+      .filter(([key, data]) => !data.isPast) // Only future
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(0, 8);
 
@@ -338,7 +454,32 @@ const Dashboard = () => {
     const availableValue = inventory
       .filter(i => i.status === 'available')
       .reduce((sum, i) => sum + (parseFloat(i.totalValue) || parseFloat(i.saleValue) || 0), 0);
-    return { total: inventory.length, available, sold, reserved, availableValue };
+    
+    // Project-wise breakdown of available inventory
+    const projectBreakdown = {};
+    inventory.filter(i => i.status === 'available').forEach(item => {
+      const projectName = item.projectName || item.project_name || 'Unassigned';
+      if (!projectBreakdown[projectName]) {
+        projectBreakdown[projectName] = {
+          name: projectName,
+          units: 0,
+          totalMarlas: 0,
+          totalValue: 0
+        };
+      }
+      projectBreakdown[projectName].units++;
+      projectBreakdown[projectName].totalMarlas += parseFloat(item.marlas) || 0;
+      projectBreakdown[projectName].totalValue += parseFloat(item.totalValue) || parseFloat(item.saleValue) || 0;
+    });
+
+    // Calculate averages and convert to array
+    const byProject = Object.values(projectBreakdown).map(p => ({
+      ...p,
+      avgMarlas: p.units > 0 ? (p.totalMarlas / p.units).toFixed(2) : 0,
+      avgValue: p.units > 0 ? (p.totalValue / p.units) : 0
+    })).sort((a, b) => b.units - a.units);
+
+    return { total: inventory.length, available, sold, reserved, availableValue, byProject };
   }, [inventory]);
 
   // ========== RECENT ACTIVITIES - OPTIMIZED ==========
@@ -545,6 +686,18 @@ const Dashboard = () => {
             <span style={styles.kpiMeta}>{overdueMetrics.overdueCount} transactions at risk</span>
           </div>
           <div style={{...styles.kpiAccent, backgroundColor: '#ef4444'}}></div>
+        </div>
+
+        <div style={styles.kpiCard}>
+          <div style={{...styles.kpiIconWrapper, backgroundColor: '#dbeafe'}}>
+            <span style={styles.kpiMainIcon}>📆</span>
+          </div>
+          <div style={styles.kpiContent}>
+            <span style={styles.kpiLabel}>FUTURE RECEIVABLE</span>
+            <span style={{...styles.kpiValue, color: '#2563eb'}}>{formatCurrency(overdueMetrics.futureAmount)}</span>
+            <span style={styles.kpiMeta}>Not yet due</span>
+          </div>
+          <div style={{...styles.kpiAccent, backgroundColor: '#3b82f6'}}></div>
         </div>
       </div>
 
@@ -792,6 +945,68 @@ const Dashboard = () => {
         </div>
       </div>
 
+      {/* Overdue by Customer Section */}
+      {overdueByCustomer.length > 0 && (
+        <div style={styles.overdueSection}>
+          <div style={styles.overdueHeader}>
+            <div style={styles.overdueTitleGroup}>
+              <span style={styles.overdueIcon}>⚠️</span>
+              <h3 style={styles.overdueTitle}>Overdue by Customer</h3>
+              <span style={styles.overdueCount}>{overdueByCustomer.length} customers</span>
+            </div>
+            <span style={styles.overdueTotalAmount}>{formatCurrency(overdueByCustomer.reduce((s, c) => s + c.totalOverdue, 0))}</span>
+          </div>
+          <div style={styles.overdueList}>
+            {overdueByCustomer.slice(0, 5).map((customer, idx) => (
+              <div 
+                key={customer.customerId} 
+                style={{
+                  ...styles.overdueCustomer,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                }}
+                onClick={() => setExpandedCustomer(expandedCustomer === customer.customerId ? null : customer.customerId)}
+              >
+                <div style={styles.overdueCustomerMain}>
+                  <div style={styles.overdueCustomerInfo}>
+                    <span style={styles.overdueRank}>{idx + 1}</span>
+                    <div style={styles.overdueCustomerDetails}>
+                      <span style={styles.overdueCustomerName}>{customer.customerName}</span>
+                      <span style={styles.overdueCustomerPhone}>{customer.customerPhone || 'No phone'}</span>
+                    </div>
+                  </div>
+                  <div style={styles.overdueCustomerStats}>
+                    <span style={styles.overdueCustomerAmount}>{formatCurrency(customer.totalOverdue)}</span>
+                    <span style={styles.overdueCustomerMeta}>
+                      {customer.overdueInstallments.length} installment{customer.overdueInstallments.length > 1 ? 's' : ''} • {customer.projectCount} project{customer.projectCount > 1 ? 's' : ''}
+                      <span style={{ marginLeft: '8px' }}>{expandedCustomer === customer.customerId ? '▲' : '▼'}</span>
+                    </span>
+                  </div>
+                </div>
+                {expandedCustomer === customer.customerId && (
+                  <div style={styles.overdueInstallmentsList}>
+                    {customer.overdueInstallments.map((inst, instIdx) => (
+                      <div key={instIdx} style={styles.overdueInstallmentItem}>
+                        <span style={styles.overdueInstProject}>{inst.projectName} - Unit {inst.unit}</span>
+                        <span style={styles.overdueInstDetails}>
+                          Inst #{inst.installmentNumber} • Due {formatDate(inst.dueDate)} • <span style={styles.daysOverdue}>{inst.daysOverdue} days overdue</span>
+                        </span>
+                        <span style={styles.overdueInstAmount}>{formatCurrency(inst.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {overdueByCustomer.length > 5 && (
+            <div style={styles.overdueFooter}>
+              Showing top 5 of {overdueByCustomer.length} customers with overdue payments
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Bottom Summary Cards */}
       <div style={styles.bottomGrid}>
         <div style={styles.summaryCard}>
@@ -834,8 +1049,22 @@ const Dashboard = () => {
               <span style={styles.summaryStatLabel}>Reserved</span>
             </div>
           </div>
+          {/* Project-wise breakdown */}
+          {inventoryStats.byProject && inventoryStats.byProject.length > 0 && (
+            <div style={styles.projectBreakdown}>
+              <div style={styles.projectBreakdownTitle}>Available by Project</div>
+              {inventoryStats.byProject.slice(0, 3).map((proj, idx) => (
+                <div key={idx} style={styles.projectBreakdownItem}>
+                  <span style={styles.projectBreakdownName}>{proj.name}</span>
+                  <span style={styles.projectBreakdownDetails}>
+                    {proj.units} units • Avg {proj.avgMarlas} marla • {formatCurrency(proj.avgValue)}/unit
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={styles.summaryFooter}>
-            Available Value: {formatCurrency(inventoryStats.availableValue)}
+            Total Available Value: {formatCurrency(inventoryStats.availableValue)}
           </div>
         </div>
 
@@ -856,6 +1085,14 @@ const Dashboard = () => {
             <div style={styles.metricItem}>
               <span>Avg. Deal Size</span>
               <span style={styles.metricValue}>{projects.length > 0 ? formatCurrency(financials.totalSale / projects.length) : '₨0'}</span>
+            </div>
+            <div style={styles.metricItem}>
+              <span>Avg. Marla/Deal</span>
+              <span style={styles.metricValue}>
+                {projects.length > 0 
+                  ? (projects.reduce((sum, p) => sum + (parseFloat(p.marlas) || 0), 0) / projects.length).toFixed(2)
+                  : '0'} marla
+              </span>
             </div>
           </div>
         </div>
@@ -937,8 +1174,8 @@ const styles = {
   },
   kpiGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: '20px',
+    gridTemplateColumns: 'repeat(5, 1fr)',
+    gap: '16px',
     marginBottom: '24px',
   },
   kpiCard: {
@@ -1543,6 +1780,193 @@ const styles = {
     padding: '20px',
     color: '#94a3b8',
     fontSize: '12px',
+  },
+
+  // ========== OVERDUE BY CUSTOMER STYLES ==========
+  overdueSection: {
+    backgroundColor: '#fff',
+    borderRadius: '16px',
+    padding: '20px',
+    marginBottom: '24px',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+    border: '1px solid #fecaca',
+  },
+  overdueHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '16px',
+    paddingBottom: '12px',
+    borderBottom: '1px solid #fee2e2',
+  },
+  overdueTitleGroup: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+  },
+  overdueIcon: {
+    fontSize: '24px',
+  },
+  overdueTitle: {
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#dc2626',
+    margin: 0,
+  },
+  overdueCount: {
+    fontSize: '12px',
+    color: '#f87171',
+    backgroundColor: '#fef2f2',
+    padding: '4px 10px',
+    borderRadius: '12px',
+    fontWeight: '500',
+  },
+  overdueTotalAmount: {
+    fontSize: '20px',
+    fontWeight: '700',
+    color: '#dc2626',
+  },
+  overdueList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  overdueCustomer: {
+    backgroundColor: '#fef2f2',
+    borderRadius: '12px',
+    padding: '14px',
+    border: '1px solid #fecaca',
+  },
+  overdueCustomerMain: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: '10px',
+  },
+  overdueCustomerInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  overdueRank: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    backgroundColor: '#dc2626',
+    color: '#fff',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '12px',
+    fontWeight: '700',
+  },
+  overdueCustomerDetails: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  overdueCustomerName: {
+    fontSize: '15px',
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  overdueCustomerPhone: {
+    fontSize: '12px',
+    color: '#64748b',
+  },
+  overdueCustomerStats: {
+    textAlign: 'right',
+  },
+  overdueCustomerAmount: {
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#dc2626',
+    display: 'block',
+  },
+  overdueCustomerMeta: {
+    fontSize: '11px',
+    color: '#64748b',
+  },
+  overdueInstallmentsList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    marginTop: '8px',
+    paddingTop: '10px',
+    borderTop: '1px dashed #fca5a5',
+  },
+  overdueInstallmentItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    fontSize: '12px',
+  },
+  overdueInstProject: {
+    fontWeight: '600',
+    color: '#1e293b',
+    flex: '1',
+  },
+  overdueInstDetails: {
+    color: '#64748b',
+    flex: '2',
+    textAlign: 'center',
+  },
+  daysOverdue: {
+    color: '#dc2626',
+    fontWeight: '600',
+  },
+  overdueInstAmount: {
+    fontWeight: '600',
+    color: '#dc2626',
+    flex: '1',
+    textAlign: 'right',
+  },
+  moreInstallments: {
+    fontSize: '11px',
+    color: '#f87171',
+    textAlign: 'center',
+    padding: '6px',
+    fontStyle: 'italic',
+  },
+  overdueFooter: {
+    marginTop: '12px',
+    textAlign: 'center',
+    fontSize: '12px',
+    color: '#94a3b8',
+    fontStyle: 'italic',
+  },
+
+  // ========== PROJECT BREAKDOWN STYLES ==========
+  projectBreakdown: {
+    marginTop: '12px',
+    paddingTop: '12px',
+    borderTop: '1px solid #e2e8f0',
+  },
+  projectBreakdownTitle: {
+    fontSize: '11px',
+    fontWeight: '600',
+    color: '#64748b',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+  },
+  projectBreakdownItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '6px 0',
+    borderBottom: '1px solid #f1f5f9',
+  },
+  projectBreakdownName: {
+    fontSize: '13px',
+    fontWeight: '600',
+    color: '#1e293b',
+  },
+  projectBreakdownDetails: {
+    fontSize: '11px',
+    color: '#64748b',
   },
 };
 
