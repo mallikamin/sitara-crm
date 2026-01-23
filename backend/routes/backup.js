@@ -6,9 +6,10 @@ const router = express.Router();
 // Export all data as backup
 router.get('/export', async (req, res) => {
   try {
-    const [customers, brokers, projects, receipts, interactions, inventory, masterProjects, commissionPayments, settings] = await Promise.all([
+    const [customers, brokers, companyReps, projects, receipts, interactions, inventory, masterProjects, commissionPayments, settings] = await Promise.all([
       pool.query('SELECT * FROM customers'),
       pool.query('SELECT * FROM brokers'),
+      pool.query('SELECT * FROM company_reps').catch(() => ({ rows: [] })), // Handle if table doesn't exist
       pool.query('SELECT * FROM projects'),
       pool.query('SELECT * FROM receipts'),
       pool.query('SELECT * FROM interactions'),
@@ -28,6 +29,7 @@ router.get('/export', async (req, res) => {
       exportDate: new Date().toISOString(),
       customers: customers.rows,
       brokers: brokers.rows,
+      companyReps: companyReps.rows,
       projects: projects.rows.map(p => ({
         ...p,
         installments: typeof p.installments === 'string' ? JSON.parse(p.installments) : p.installments
@@ -94,6 +96,7 @@ router.post('/import', async (req, res) => {
     const stats = {
       customers: { imported: 0, skipped: 0, errors: 0 },
       brokers: { imported: 0, skipped: 0, errors: 0 },
+      companyReps: { imported: 0, skipped: 0, errors: 0 },
       projects: { imported: 0, skipped: 0, errors: 0 },
       receipts: { imported: 0, skipped: 0, errors: 0 },
       interactions: { imported: 0, skipped: 0, errors: 0 },
@@ -206,6 +209,58 @@ router.post('/import', async (req, res) => {
           }
         }
         console.log(`✅ Imported ${stats.brokers.imported} brokers (${stats.brokers.errors} errors, ${stats.brokers.skipped} skipped)`);
+      }
+
+      // ==================== IMPORT COMPANY REPS ====================
+      if (backup.companyReps && Array.isArray(backup.companyReps)) {
+        console.log(`📦 Importing ${backup.companyReps.length} company reps...`);
+        
+        for (let i = 0; i < backup.companyReps.length; i++) {
+          const rep = backup.companyReps[i];
+          const repId = rep.id;
+          
+          if (!repId) {
+            console.warn('⚠️ Company rep missing ID, skipping...');
+            stats.companyReps.skipped++;
+            continue;
+          }
+          
+          const result = await safeInsert(client, `sp_rep_${i}`, async () => {
+            await client.query(
+              `INSERT INTO company_reps (id, name, phone, cnic, email, address, designation, commission_rate, bank_details, notes, status, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+               ON CONFLICT (id) DO UPDATE SET
+               name = EXCLUDED.name, phone = EXCLUDED.phone, cnic = EXCLUDED.cnic,
+               email = EXCLUDED.email, address = EXCLUDED.address, designation = EXCLUDED.designation,
+               commission_rate = EXCLUDED.commission_rate, bank_details = EXCLUDED.bank_details,
+               notes = EXCLUDED.notes, status = EXCLUDED.status,
+               updated_at = EXCLUDED.updated_at`,
+              [
+                repId, 
+                rep.name || '', 
+                rep.phone || null, 
+                rep.cnic || null, 
+                rep.email || null,
+                rep.address || null, 
+                rep.designation || null, 
+                rep.commissionRate || rep.commission_rate || 1, 
+                rep.bankDetails || rep.bank_details || null,
+                rep.notes || null, 
+                rep.status || 'active', 
+                rep.createdAt || rep.created_at || new Date().toISOString(), 
+                rep.updatedAt || rep.updated_at || new Date().toISOString()
+              ]
+            );
+          });
+          
+          if (result.success) {
+            stats.companyReps.imported++;
+          } else {
+            console.error(`Error importing company rep ${repId}:`, result.error);
+            stats.companyReps.errors++;
+          }
+        }
+        console.log(`✅ Imported ${stats.companyReps.imported} company reps (${stats.companyReps.errors} errors, ${stats.companyReps.skipped} skipped)`);
       }
 
       // ==================== IMPORT PROJECTS ====================
@@ -659,6 +714,7 @@ router.delete('/clear', async (req, res) => {
       await client.query('DELETE FROM inventory');
       await client.query('DELETE FROM projects');
       await client.query('DELETE FROM brokers');
+      await client.query('DELETE FROM company_reps');
       await client.query('DELETE FROM customers');
       await client.query('DELETE FROM master_projects');
       await client.query('DELETE FROM settings');

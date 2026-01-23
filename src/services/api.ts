@@ -330,6 +330,42 @@ class ApiService {
     });
   }
 
+  // Company Reps
+  async getCompanyReps() {
+    return this.request('/company-reps');
+  }
+
+  async getCompanyRep(id: string) {
+    return this.request(`/company-reps/${id}`);
+  }
+
+  async createCompanyRep(rep: any) {
+    return this.request('/company-reps', {
+      method: 'POST',
+      body: JSON.stringify(rep),
+    });
+  }
+
+  async updateCompanyRep(id: string, rep: any) {
+    return this.request(`/company-reps/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(rep),
+    });
+  }
+
+  async deleteCompanyRep(id: string) {
+    return this.request(`/company-reps/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async bulkCreateCompanyReps(reps: any[]) {
+    return this.request('/company-reps/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ companyReps: reps }),
+    });
+  }
+
   // Settings
   async getSettings() {
     return this.request('/settings');

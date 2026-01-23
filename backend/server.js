@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { pool } from './config/database.js';
 import customersRoutes from './routes/customers.js';
 import brokersRoutes from './routes/brokers.js';
+import companyRepsRoutes from './routes/companyReps.js';
 import projectsRoutes from './routes/projects.js';
 import receiptsRoutes from './routes/receipts.js';
 import interactionsRoutes from './routes/interactions.js';
@@ -44,6 +45,7 @@ app.get('/health', async (req, res) => {
 // API Routes
 app.use('/api/customers', customersRoutes);
 app.use('/api/brokers', brokersRoutes);
+app.use('/api/company-reps', companyRepsRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/receipts', receiptsRoutes);
 app.use('/api/interactions', interactionsRoutes);
@@ -102,4 +104,3 @@ process.on('SIGINT', async () => {
 });
 
 export default app;
-
