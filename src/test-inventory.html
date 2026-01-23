@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <button onclick="testStore()">Test Store</button>
+  <script>
+    async function testStore() {
+      // Try to access the store through the window object
+      if (window.useCRMStore) {
+        console.log('Store found:', window.useCRMStore);
+      } else {
+        console.log('Store not found on window');
+      }
+      
+      // Check if React app is loaded
+      if (window.React) {
+        console.log('React found');
+      }
+    }
+  </script>
+</body>
+</html>

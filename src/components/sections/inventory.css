@@ -57,3 +57,82 @@
       flex-direction: column;
     }
   }
+  /* Add these to your existing inventory.css */
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.stat-card {
+  padding: 1.5rem;
+  border-radius: 8px;
+  border: 1px solid;
+}
+
+.stat-card.stat-success {
+  background-color: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+.stat-card.stat-warning {
+  background-color: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.stat-card.stat-danger {
+  background-color: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.stat-card.stat-primary {
+  background-color: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+.stat-card.stat-success .stat-label {
+  color: #10b981;
+}
+
+.stat-card.stat-warning .stat-label {
+  color: #f59e0b;
+}
+
+.stat-card.stat-danger .stat-label {
+  color: #ef4444;
+}
+
+.stat-card.stat-primary .stat-label {
+  color: #3b82f6;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.stat-card.stat-success .stat-value {
+  color: #10b981;
+}
+
+.stat-card.stat-warning .stat-value {
+  color: #f59e0b;
+}
+
+.stat-card.stat-danger .stat-value {
+  color: #ef4444;
+}
+
+.stat-card.stat-primary .stat-value {
+  color: #3b82f6;
+}

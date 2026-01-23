@@ -1,16 +1,59 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useData } from '../../contexts/DataContext';
 import CustomerModal from '../modals/CustomerModal';
-import CustomerDetails from '../crm/CustomerDetails'; // Add this import
-
+import CustomerDetails from '../crm/CustomerDetails';
 
 function Customers() {
-  const { db, addCustomer, updateCustomer, deleteCustomer } = useData();
+  const { 
+    customers, 
+    projects,  // projects ARE transactions
+    receipts,
+    addCustomer, 
+    updateCustomer, 
+    deleteCustomer 
+  } = useData();
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false); 
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [customerTypeFilter, setCustomerTypeFilter] = useState('all');
+
+  // Calculate customer stats with transactions
+  const customerStats = useMemo(() => {
+    return (customers || []).map(customer => {
+      // Get all transactions/projects for this customer
+      // projects ARE the transactions - stored flat, not nested
+      const customerTransactions = (projects || []).filter(p => 
+        String(p.customerId) === String(customer.id)
+      );
+
+      // Get receipts for this customer
+      const customerReceipts = (receipts || []).filter(r => 
+        String(r.customerId) === String(customer.id)
+      );
+
+      // Calculate totals
+      const totalValue = customerTransactions.reduce((sum, t) => 
+        sum + (parseFloat(t.sale) || parseFloat(t.saleValue) || parseFloat(t.totalSale) || 0), 0
+      );
+      const totalReceived = customerTransactions.reduce((sum, t) => 
+        sum + (parseFloat(t.received) || parseFloat(t.totalReceived) || 0), 0
+      );
+      const totalFromReceipts = customerReceipts.reduce((sum, r) => 
+        sum + (parseFloat(r.amount) || 0), 0
+      );
+
+      return {
+        ...customer,
+        transactionCount: customerTransactions.length,
+        receiptCount: customerReceipts.length,
+        totalValue,
+        totalReceived: Math.max(totalReceived, totalFromReceipts), // Use higher value
+        totalPending: totalValue - Math.max(totalReceived, totalFromReceipts)
+      };
+    });
+  }, [customers, projects, receipts]);
 
   const handleAddCustomer = () => {
     setSelectedCustomer(null);
@@ -40,20 +83,33 @@ function Customers() {
   const handleViewDetails = (customer) => {
     setSelectedCustomer(customer);
     setIsDetailsOpen(true);
-    console.log('View customer details:', customer);
-    // You can create a separate CustomerDetails component or modal
   };
 
-  const filteredCustomers = db.customers?.filter(customer => {
+  const filteredCustomers = customerStats.filter(customer => {
     const matchesSearch = 
       customer.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       customer.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      customer.phone?.includes(searchTerm);
+      customer.phone?.includes(searchTerm) ||
+      customer.company?.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesType = customerTypeFilter === 'all' || customer.type === customerTypeFilter;
+    // Handle both 'individual' and 'customer' types
+    let matchesType = customerTypeFilter === 'all';
+    if (customerTypeFilter === 'individual') {
+      matchesType = customer.type === 'individual' || customer.type === 'customer';
+    } else if (customerTypeFilter !== 'all') {
+      matchesType = customer.type === customerTypeFilter;
+    }
     
     return matchesSearch && matchesType;
-  }) || [];
+  });
+
+  // Count stats
+  const totalCustomers = customers?.length || 0;
+  const brokerCount = (customers || []).filter(c => c.type === 'broker').length;
+  const customerCount = (customers || []).filter(c => 
+    c.type === 'individual' || c.type === 'customer'
+  ).length;
+  const bothCount = (customers || []).filter(c => c.type === 'both').length;
 
   return (
     <div className="p-6">
@@ -91,9 +147,9 @@ function Customers() {
               className="w-full px-4 py-2 border rounded-lg"
             >
               <option value="all">All Types</option>
-              <option value="individual">Individual</option>
-              <option value="corporate">Corporate</option>
-              <option value="government">Government</option>
+              <option value="individual">Customers</option>
+              <option value="broker">Brokers</option>
+              <option value="both">Both</option>
             </select>
           </div>
         </div>
@@ -102,26 +158,20 @@ function Customers() {
       {/* Customer Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-2xl font-bold">{db.customers?.length || 0}</div>
+          <div className="text-2xl font-bold">{totalCustomers}</div>
           <div className="text-sm text-gray-600">Total Customers</div>
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-2xl font-bold">
-            {db.customers?.filter(c => c.type === 'corporate').length || 0}
-          </div>
-          <div className="text-sm text-gray-600">Corporate</div>
+          <div className="text-2xl font-bold text-orange-600">{brokerCount}</div>
+          <div className="text-sm text-gray-600">Brokers</div>
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-2xl font-bold">
-            {db.customers?.filter(c => c.type === 'individual').length || 0}
-          </div>
-          <div className="text-sm text-gray-600">Individuals</div>
+          <div className="text-2xl font-bold text-green-600">{customerCount}</div>
+          <div className="text-sm text-gray-600">Customers</div>
         </div>
         <div className="bg-white p-4 rounded-lg shadow">
-          <div className="text-2xl font-bold">
-            {db.customers?.filter(c => c.type === 'government').length || 0}
-          </div>
-          <div className="text-sm text-gray-600">Government</div>
+          <div className="text-2xl font-bold text-purple-600">{bothCount}</div>
+          <div className="text-sm text-gray-600">Both</div>
         </div>
       </div>
 
@@ -134,7 +184,7 @@ function Customers() {
                 <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Customer</th>
                 <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Contact</th>
                 <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Type</th>
-                <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Projects</th>
+                <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Transactions</th>
                 <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Status</th>
                 <th className="py-3 px-4 text-left text-sm font-medium text-gray-700">Actions</th>
               </tr>
@@ -143,13 +193,15 @@ function Customers() {
               {filteredCustomers.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-gray-500">
-                    No customers found. Click "Add New Customer" to get started.
+                    <div className="flex flex-col items-center gap-2">
+                      <span className="text-4xl">👥</span>
+                      <p>No customers found.</p>
+                      <p className="text-sm">Click "Add New Customer" to get started.</p>
+                    </div>
                   </td>
                 </tr>
               ) : (
                 filteredCustomers.map((customer) => {
-                  const customerProjects = db.projects?.filter(p => p.customerId === customer.id) || [];
-                  
                   return (
                     <tr 
                       key={customer.id} 
@@ -160,7 +212,7 @@ function Customers() {
                         <div className="flex items-center">
                           <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center mr-3">
                             <span className="text-blue-600 font-medium">
-                              {customer.name?.charAt(0).toUpperCase()}
+                              {customer.name?.charAt(0)?.toUpperCase() || '?'}
                             </span>
                           </div>
                           <div>
@@ -175,19 +227,35 @@ function Customers() {
                       </td>
                       <td className="py-4 px-4">
                         <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-                          customer.type === 'corporate' ? 'bg-blue-100 text-blue-800' :
-                          customer.type === 'individual' ? 'bg-green-100 text-green-800' :
-                          customer.type === 'government' ? 'bg-purple-100 text-purple-800' :
+                          customer.type === 'broker' ? 'bg-orange-100 text-orange-800' :
+                          (customer.type === 'individual' || customer.type === 'customer') ? 'bg-green-100 text-green-800' :
+                          customer.type === 'both' ? 'bg-purple-100 text-purple-800' :
                           'bg-gray-100 text-gray-800'
                         }`}>
-                          {customer.type || 'Unknown'}
+                          {customer.type === 'individual' ? 'Customer' : (customer.type || 'Unknown')}
                         </span>
                       </td>
                       <td className="py-4 px-4">
-                        <div className="text-sm">{customerProjects.length} projects</div>
-                        <div className="text-xs text-gray-500">
-                          Total: ₨{customerProjects.reduce((sum, p) => sum + (p.budget || 0), 0).toLocaleString()}
+                        <div className="text-sm font-medium">
+                          {customer.transactionCount} transaction(s)
                         </div>
+                        {customer.totalValue > 0 && (
+                          <>
+                            <div className="text-xs text-gray-500">
+                              Total: ₨{customer.totalValue.toLocaleString()}
+                            </div>
+                            {customer.totalPending > 0 && (
+                              <div className="text-xs text-orange-600">
+                                Due: ₨{customer.totalPending.toLocaleString()}
+                              </div>
+                            )}
+                          </>
+                        )}
+                        {customer.receiptCount > 0 && (
+                          <div className="text-xs text-emerald-600">
+                            {customer.receiptCount} receipt(s)
+                          </div>
+                        )}
                       </td>
                       <td className="py-4 px-4">
                         <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
@@ -241,15 +309,13 @@ function Customers() {
         />
       )}
 
-
-      {/* Customer Details */}        
-      {isDetailsOpen && (
+      {/* Customer Details */}
+      {isDetailsOpen && selectedCustomer && (
         <CustomerDetails
           customer={selectedCustomer}
           onClose={() => setIsDetailsOpen(false)}
         />
       )}
-
     </div>
   );
 }

@@ -1,206 +1,159 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import { CRMData, Customer, Project, Interaction, Receipt, Inventory, Notification } from '../types/crm'
-import { INITIAL_DB } from '../constants'
+/**
+ * CRM Store - DEPRECATED
+ * 
+ * This file has been replaced by DataContext.jsx for v4.0
+ * 
+ * DataContext now handles:
+ * - All CRUD operations
+ * - localStorage persistence
+ * - Backup/restore
+ * - Company reps & commission payments
+ * - Migration from old formats
+ * 
+ * This stub file exists only for backward compatibility.
+ * All functionality is provided by DataContext.
+ * 
+ * DO NOT USE THIS STORE DIRECTLY - use useData() from DataContext instead.
+ */
 
-interface CRMStore {
-  // Data state
-  db: CRMData
-  loading: boolean
-  currentSection: string
+import { useData } from '../contexts/DataContext';
+
+// ========== COMPATIBILITY LAYER ==========
+// These hooks redirect to DataContext to prevent breaking existing imports
+
+/**
+ * @deprecated Use useData() from DataContext instead
+ */
+export const useCRMStore = (selector) => {
+  const data = useData();
   
-  // UI state
-  notifications: Notification[]
+  // Create a state-like object for compatibility
+  const state = {
+    version: '4.0',
+    customers: data.customers || [],
+    projects: data.projects || [],
+    brokers: data.brokers || [],
+    receipts: data.receipts || [],
+    interactions: data.interactions || [],
+    inventory: data.inventory || [],
+    masterProjects: data.masterProjects || [],
+    companyReps: data.companyReps || [],
+    commissionPayments: data.commissionPayments || [],
+    settings: data.settings || {},
+    lastUpdated: data.lastSaved,
+    isLoading: data.loading,
+    error: null,
+    
+    // Actions - map to DataContext functions
+    addCustomer: data.addCustomer,
+    updateCustomer: data.updateCustomer,
+    deleteCustomer: data.deleteCustomer,
+    addProject: data.addProject,
+    updateProject: data.updateProject,
+    deleteProject: data.deleteProject,
+    addReceipt: data.addReceipt,
+    updateReceipt: data.updateReceipt,
+    deleteReceipt: data.deleteReceipt,
+    addInteraction: data.addInteraction,
+    updateInteraction: data.updateInteraction,
+    deleteInteraction: data.deleteInteraction,
+    addInventoryItem: data.addInventoryItem,
+    updateInventory: data.updateInventory,
+    deleteInventory: data.deleteInventory,
+    
+    // Broker actions
+    addBroker: data.addBroker,
+    updateBroker: data.updateBroker,
+    deleteBroker: data.deleteBroker,
+    
+    // Company rep actions
+    addCompanyRep: data.addCompanyRep,
+    updateCompanyRep: data.updateCompanyRep,
+    deleteCompanyRep: data.deleteCompanyRep,
+  };
   
-  // Data actions
-  setDb: (data: CRMData) => void
-  setLoading: (loading: boolean) => void
-  setCurrentSection: (section: string) => void
+  // If a selector is provided, use it
+  if (typeof selector === 'function') {
+    return selector(state);
+  }
   
-  // Customer actions
-  addCustomer: (customer: Omit<Customer, 'id' | 'createdAt' | 'updatedAt'>) => void
-  updateCustomer: (id: string, updates: Partial<Customer>) => void
-  deleteCustomer: (id: string) => void
-  
-  // Project actions
-  addProject: (project: Omit<Project, 'id' | 'createdAt' | 'updatedAt'>) => void
-  updateProject: (id: string, updates: Partial<Project>) => void
-  deleteProject: (id: string) => void
-  
-  // Inventory actions
-  addInventory: (item: Omit<Inventory, 'id' | 'createdAt' | 'updatedAt'>) => void
-  updateInventory: (id: string, updates: Partial<Inventory>) => void
-  deleteInventory: (id: string) => void
-  
-  // Interaction actions
-  addInteraction: (interaction: Omit<Interaction, 'id' | 'createdAt'>) => void
-  deleteInteraction: (id: string) => void
-  
-  // Receipt actions
-  addReceipt: (receipt: Omit<Receipt, 'id' | 'createdAt'>) => void
-  deleteReceipt: (id: string) => void
-  
-  // Notification actions
-  addNotification: (notification: Omit<Notification, 'id'>) => void
-  removeNotification: (id: string) => void
-  
-  // Utility actions
-  resetData: () => void
-  exportData: () => string
-  importData: (data: CRMData) => void
+  return state;
+};
+
+// ========== SELECTOR HOOKS (for backward compatibility) ==========
+
+/** @deprecated Use useData().customers instead */
+export const useCustomers = () => {
+  const { customers } = useData();
+  return customers || [];
+};
+
+/** @deprecated Use useData().projects instead */
+export const useProjects = () => {
+  const { projects } = useData();
+  return projects || [];
+};
+
+/** @deprecated Use useData().brokers instead */
+export const useBrokers = () => {
+  const { brokers } = useData();
+  return brokers || [];
+};
+
+/** @deprecated Use useData().receipts instead */
+export const useReceipts = () => {
+  const { receipts } = useData();
+  return receipts || [];
+};
+
+/** @deprecated Use useData().interactions instead */
+export const useInteractions = () => {
+  const { interactions } = useData();
+  return interactions || [];
+};
+
+/** @deprecated Use useData().inventory instead */
+export const useInventory = () => {
+  const { inventory } = useData();
+  return inventory || [];
+};
+
+/** @deprecated Use useData().settings instead */
+export const useSettings = () => {
+  const { settings } = useData();
+  return settings || {};
+};
+
+/** @deprecated Use useData().companyReps instead */
+export const useCompanyReps = () => {
+  const { companyReps } = useData();
+  return companyReps || [];
+};
+
+// ========== HELPER HOOKS ==========
+
+export const useCustomerProjects = (customerId) => {
+  const { projects } = useData();
+  return (projects || []).filter(p => p.customerId === customerId);
+};
+
+export const useProjectReceipts = (projectId) => {
+  const { receipts } = useData();
+  return (receipts || []).filter(r => r.projectId === projectId);
+};
+
+export const useBrokerDeals = (brokerId) => {
+  const { projects } = useData();
+  return (projects || []).filter(p => p.brokerId === brokerId);
+};
+
+// Default export for compatibility
+export default useCRMStore;
+
+// Log deprecation notice in development
+if (process.env.NODE_ENV === 'development') {
+  console.warn(
+    '⚠️ useCRMStore is deprecated. Please use useData() from DataContext instead.\n' +
+    'Import: import { useData } from "./contexts/DataContext"'
+  );
 }
-
-export const useCRMStore = create<CRMStore>()(
-  persist(
-    (set, get) => ({
-      // Initial state
-      db: INITIAL_DB,
-      loading: false,
-      currentSection: 'dashboard',
-      notifications: [],
-      
-      // Data actions
-      setDb: (data) => set({ db: data }),
-      setLoading: (loading) => set({ loading }),
-      setCurrentSection: (section) => set({ currentSection: section }),
-      
-      // Customer actions
-      addCustomer: (customerData) => set((state) => {
-        const newCustomer: Customer = {
-          ...customerData,
-          id: `cust_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-        
-        return {
-          db: {
-            ...state.db,
-            customers: [...state.db.customers, newCustomer],
-            lastUpdated: new Date().toISOString()
-          }
-        }
-      }),
-      
-      updateCustomer: (id, updates) => set((state) => ({
-        db: {
-          ...state.db,
-          customers: state.db.customers.map(customer => 
-            customer.id === id 
-              ? { ...customer, ...updates, updatedAt: new Date().toISOString() }
-              : customer
-          ),
-          lastUpdated: new Date().toISOString()
-        }
-      })),
-      
-      deleteCustomer: (id) => set((state) => ({
-        db: {
-          ...state.db,
-          customers: state.db.customers.filter(c => c.id !== id),
-          lastUpdated: new Date().toISOString()
-        }
-      })),
-      
-      // Project actions
-      addProject: (projectData) => set((state) => {
-        const newProject: Project = {
-          ...projectData,
-          id: `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-        
-        return {
-          db: {
-            ...state.db,
-            projects: [...state.db.projects, newProject],
-            lastUpdated: new Date().toISOString()
-          }
-        }
-      }),
-      
-      // Inventory actions
-      addInventory: (itemData) => set((state) => {
-        const newItem: Inventory = {
-          ...itemData,
-          id: `inv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-        
-        return {
-          db: {
-            ...state.db,
-            inventory: [...state.db.inventory, newItem],
-            lastUpdated: new Date().toISOString()
-          }
-        }
-      }),
-      
-      // Interaction actions
-      addInteraction: (interactionData) => set((state) => {
-        const newInteraction: Interaction = {
-          ...interactionData,
-          id: `int_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString()
-        }
-        
-        return {
-          db: {
-            ...state.db,
-            interactions: [...state.db.interactions, newInteraction],
-            lastUpdated: new Date().toISOString()
-          }
-        }
-      }),
-      
-      // Receipt actions
-      addReceipt: (receiptData) => set((state) => {
-        const newReceipt: Receipt = {
-          ...receiptData,
-          id: `rcpt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          createdAt: new Date().toISOString()
-        }
-        
-        return {
-          db: {
-            ...state.db,
-            receipts: [...state.db.receipts, newReceipt],
-            lastUpdated: new Date().toISOString()
-          }
-        }
-      }),
-      
-      // Notification actions
-      addNotification: (notification) => set((state) => ({
-        notifications: [
-          ...state.notifications,
-          {
-            ...notification,
-            id: Date.now().toString()
-          }
-        ]
-      })),
-      
-      removeNotification: (id) => set((state) => ({
-        notifications: state.notifications.filter(n => n.id !== id)
-      })),
-      
-      // Utility actions
-      resetData: () => set({ db: INITIAL_DB }),
-      
-      exportData: () => {
-        return JSON.stringify(get().db, null, 2)
-      },
-      
-      importData: (data) => {
-        set({ db: data })
-      }
-    }),
-    {
-      name: 'sitara-crm-storage',
-      partialize: (state) => ({ db: state.db })
-    }
-  )
-)

@@ -1,20 +1,12 @@
+import { ExcelInventoryRow, InventoryItem } from '@/types/crm';
+
+
 export const validateEmail = (email: string): boolean => {
   if (!email) return true // Email is optional
   const regex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   return regex.test(email)
 }
 
-export const validatePhone = (phone: string): boolean => {
-  if (!phone) return false
-  const regex = /^[\+]?[0-9\s\-\(\)]{10,15}$/
-  return regex.test(phone)
-}
-
-export const validateCNIC = (cnic: string): boolean => {
-  if (!cnic) return true // CNIC is optional
-  const regex = /^[0-9]{5}-[0-9]{7}-[0-9]{1}$/
-  return regex.test(cnic)
-}
 
 export const validateRequired = (value: string): boolean => {
   return !!value && value.trim().length > 0
@@ -43,10 +35,7 @@ export const validateProjectData = (data: any): { isValid: boolean; errors: stri
     errors.push('Valid marlas amount is required')
   }
 
-  if (!validateNumber(data.rate, 0)) {
-    errors.push('Valid rate per marla is required')
-  }
-
+  
   if (!validateNumber(data.installments, 1, 36)) {
     errors.push('Installments must be between 1 and 36')
   }
@@ -64,20 +53,97 @@ export const validateCustomerData = (data: any): { isValid: boolean; errors: str
     errors.push('Customer name is required')
   }
 
-  if (!validatePhone(data.phone)) {
-    errors.push('Valid phone number is required')
-  }
-
+  
   if (data.email && !validateEmail(data.email)) {
     errors.push('Invalid email format')
   }
 
-  if (data.cnic && !validateCNIC(data.cnic)) {
-    errors.push('Invalid CNIC format (XXXXX-XXXXXXX-X)')
-  }
-
+  
   return {
     isValid: errors.length === 0,
     errors,
   }
 }
+
+
+
+export const validateExcelInventoryRow = (row: ExcelInventoryRow): {
+  isValid: boolean;
+  errors: string[];
+  validatedData: Partial<InventoryItem>;
+} => {
+  const errors: string[] = [];
+  const validatedData: Partial<InventoryItem> = {};
+
+  // Required fields
+  if (!row['Project Name']?.trim()) {
+    errors.push('Project Name is required');
+  } else {
+    validatedData.projectName = row['Project Name'].trim();
+  }
+
+  if (!row['Block']?.trim()) {
+    errors.push('Block is required');
+  } else {
+    validatedData.block = row['Block'].trim();
+  }
+
+  if (!row['Unit/Shop#']?.trim()) {
+    errors.push('Unit/Shop# is required');
+  } else {
+    validatedData.unitShopNumber = row['Unit/Shop#'].trim();
+  }
+
+  // Unit Type validation
+  const validUnitTypes = ['Residential', 'Commercial', 'Apartment', 'Other'];
+  const unitType = row['Unit Type']?.trim();
+  if (unitType && !validUnitTypes.includes(unitType)) {
+    errors.push(`Unit Type must be one of: ${validUnitTypes.join(', ')}`);
+  } else if (unitType) {
+    validatedData.unitType = unitType as InventoryItem['unitType'];
+  }
+
+  // Numeric validations
+  if (row['Marlas']) {
+    const marlas = parseFloat(row['Marlas']);
+    if (isNaN(marlas) || marlas <= 0) {
+      errors.push('Marlas must be a positive number');
+    } else {
+      validatedData.marlas = marlas;
+    }
+  }
+
+  if (row['Rate per Marla']) {
+    const rate = parseFloat(row['Rate per Marla']);
+    if (isNaN(rate) || rate <= 0) {
+      errors.push('Rate per Marla must be a positive number');
+    } else {
+      validatedData.ratePerMarla = rate;
+    }
+  }
+
+  // Total Value validation
+  const totalValue = parseFloat(row['Total Value'] || '');
+  if (isNaN(totalValue) || totalValue <= 0) {
+    errors.push('Total Value must be a positive number');
+  } else {
+    validatedData.totalValue = totalValue;
+  }
+
+  // Plot Features parsing (comma-separated or single)
+  if (row['Plot Features']?.trim()) {
+    const features = row['Plot Features']
+      .split(/[,;]/)
+      .map(f => f.trim())
+      .filter(f => f.length > 0);
+    validatedData.plotFeatures = features;
+  } else {
+    validatedData.plotFeatures = [];
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    validatedData
+  };
+};

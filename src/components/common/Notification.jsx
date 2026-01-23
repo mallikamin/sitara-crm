@@ -14,7 +14,19 @@ function Notification({ type = 'info', title, message, onClose }) {
   };
 
   return (
-    <div className={`fixed top-4 right-4 p-4 border-l-4 rounded-r-lg shadow-lg ${typeStyles[type]} z-50 min-w-80`}>
+    <div
+  className={`
+    fixed top-20 right-4 z-[1000]
+    min-w-[320px] max-w-[420px]
+    p-4
+    border-l-4 rounded-lg
+    shadow-xl
+    flex flex-col gap-3
+    ${typeStyles[type]}
+    animate-slide-in
+  `}
+>
+
       <div className="flex items-start">
         <span className="text-xl mr-3">{typeIcons[type]}</span>
         <div className="flex-1">

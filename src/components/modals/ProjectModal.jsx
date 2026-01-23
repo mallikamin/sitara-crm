@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useCRMStore } from "/src/store/useCRMStore";
 import {
   Dialog,
   DialogContent,
@@ -19,17 +20,13 @@ import {
 import { Customer, Project } from '@/types/crm';
 import { toast } from 'sonner';
 
-interface AddProjectModalProps {
-  open: boolean;
-  onClose: () => void;
-  onAdd: (project: Omit<Project, 'id' | 'createdAt'>) => void;
-  customers: Customer[];
-}
-
-export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectModalProps) {
+export function AddProjectModal({ open, onClose, onAdd, customers }) {
   const [formData, setFormData] = useState({
     customerId: '',
     brokerId: '',
+    brokerCommissionRate: 1,  // DEFAULT 1%
+    companyRepId: '',  // NEW
+    companyRepCommissionRate: 1,  // NEW - DEFAULT 1%
     projectName: '',
     unit: '',
     block: '',
@@ -37,7 +34,7 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
     ratePerMarla: 0,
     received: 0,
     overdue: 0,
-    status: 'active' as 'active' | 'completed' | 'cancelled',
+    status: 'active',
   });
 
   const customerOptions = useMemo(() => 
@@ -55,10 +52,15 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
 
   const selectedCustomer = customers.find(c => c.id === formData.customerId);
   const selectedBroker = customers.find(c => c.id === formData.brokerId);
+  const selectedCompanyRep = customers.find(c => c.id === formData.companyRepId);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Calculate commissions
+  const brokerCommission = formData.brokerId ? (saleValue * formData.brokerCommissionRate / 100) : 0;
+  const companyRepCommission = formData.companyRepId ? (saleValue * formData.companyRepCommissionRate / 100) : 0;
+
+  const handleSubmit = (e) => {
     e.preventDefault();
-    
+
     if (!formData.customerId || !formData.projectName || !formData.unit) {
       toast.error('Please fill in all required fields');
       return;
@@ -69,6 +71,12 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
       customerName: selectedCustomer?.name || '',
       brokerId: formData.brokerId || undefined,
       brokerName: selectedBroker?.name,
+      brokerCommissionRate: formData.brokerId ? formData.brokerCommissionRate : 0,
+      brokerCommission,
+      companyRepId: formData.companyRepId || undefined,  // NEW
+      companyRepName: selectedCompanyRep?.name,  // NEW
+      companyRepCommissionRate: formData.companyRepId ? formData.companyRepCommissionRate : 0,  // NEW
+      companyRepCommission,  // NEW
       projectName: formData.projectName,
       unit: formData.unit,
       block: formData.block || undefined,
@@ -85,6 +93,9 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
     setFormData({
       customerId: '',
       brokerId: '',
+      brokerCommissionRate: 1,
+      companyRepId: '',
+      companyRepCommissionRate: 1,
       projectName: '',
       unit: '',
       block: '',
@@ -97,7 +108,7 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
     onClose();
   };
 
-  const formatCurrency = (amount: number) => {
+  const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-PK').format(amount);
   };
 
@@ -151,6 +162,57 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
               </Select>
             </div>
 
+            {/* NEW: Broker Commission Rate */}
+            {formData.brokerId && (
+              <div className="space-y-2">
+                <Label htmlFor="brokerCommission">Broker Commission %</Label>
+                <Input
+                  id="brokerCommission"
+                  type="number"
+                  step="0.1"
+                  value={formData.brokerCommissionRate}
+                  onChange={(e) => setFormData({ ...formData, brokerCommissionRate: parseFloat(e.target.value) || 1 })}
+                  placeholder="1.0"
+                />
+              </div>
+            )}
+
+            {/* NEW: Company Rep */}
+            <div className="space-y-2">
+              <Label htmlFor="companyRep">Company Rep (Optional)</Label>
+              <Select 
+                value={formData.companyRepId} 
+                onValueChange={(value) => setFormData({ ...formData, companyRepId: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select company rep" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No Company Rep</SelectItem>
+                  {brokerOptions.map(broker => (
+                    <SelectItem key={broker.id} value={broker.id}>
+                      {broker.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* NEW: Company Rep Commission Rate */}
+            {formData.companyRepId && (
+              <div className="space-y-2">
+                <Label htmlFor="companyRepCommission">Company Rep Commission %</Label>
+                <Input
+                  id="companyRepCommission"
+                  type="number"
+                  step="0.1"
+                  value={formData.companyRepCommissionRate}
+                  onChange={(e) => setFormData({ ...formData, companyRepCommissionRate: parseFloat(e.target.value) || 1 })}
+                  placeholder="1.0"
+                />
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="projectName">Project Name *</Label>
               <Input
@@ -187,7 +249,7 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
               <Label htmlFor="status">Status *</Label>
               <Select 
                 value={formData.status} 
-                onValueChange={(value: 'active' | 'completed' | 'cancelled') => 
+                onValueChange={(value) => 
                   setFormData({ ...formData, status: value })
                 }
               >
@@ -262,6 +324,31 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
             </div>
           </div>
 
+          {/* NEW: Commission Summary */}
+          {(brokerCommission > 0 || companyRepCommission > 0) && (
+            <div className="p-4 rounded-lg bg-blue-50 border border-blue-200">
+              <Label className="text-sm font-semibold mb-2 block">Commission Summary</Label>
+              <div className="space-y-2">
+                {brokerCommission > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-purple-700">🤵 Broker ({formData.brokerCommissionRate}%):</span>
+                    <span className="font-semibold text-purple-900">₨{formatCurrency(brokerCommission)}</span>
+                  </div>
+                )}
+                {companyRepCommission > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-green-700">👔 Company Rep ({formData.companyRepCommissionRate}%):</span>
+                    <span className="font-semibold text-green-900">₨{formatCurrency(companyRepCommission)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-sm pt-2 border-t border-blue-300">
+                  <span className="font-semibold">Total Commission:</span>
+                  <span className="font-bold">₨{formatCurrency(brokerCommission + companyRepCommission)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           <DialogFooter className="gap-2">
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
@@ -275,3 +362,5 @@ export function AddProjectModal({ open, onClose, onAdd, customers }: AddProjectM
     </Dialog>
   );
 }
+
+export default AddProjectModal;
