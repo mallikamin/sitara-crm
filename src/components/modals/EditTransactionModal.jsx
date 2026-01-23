@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 const EditTransactionModal = ({ open, onClose, transaction, onSave }) => {
   // Get data directly from DataContext - no need for props

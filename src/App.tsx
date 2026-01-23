@@ -1,5 +1,6 @@
-import { DataProvider } from './contexts/DataContext';
+import { DataProvider } from './contexts/DataContextAPI';
 import { TestDataLoading } from './components/test/TestDataLoading';
+import { MigrationButton } from './components/MigrationButton';
 
 import React from 'react'
 
@@ -10,6 +11,7 @@ function App() {
       <h1 className="text-3xl font-bold text-blue-600">
         Sitara Builders CRM
       </h1>
+      <MigrationButton />
       <p className="mt-4 text-gray-600">
         Loading the application...
       </p>

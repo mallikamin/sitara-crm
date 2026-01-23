@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 export default function BackupManager({ onClose }) {
   const {
@@ -51,9 +51,10 @@ export default function BackupManager({ onClose }) {
         showMessage('Failed to create backup: ' + result.error, 'error');
       }
     } catch (error) {
-      showMessage('Error: ' + error.message, 'error');
+      showMessage('Error: ' + (error.message || 'Unknown error occurred'), 'error');
+    } finally {
+      setIsProcessing(false);
     }
-    setIsProcessing(false);
   };
 
   const handleExport = () => {
@@ -82,12 +83,12 @@ export default function BackupManager({ onClose }) {
     setIsProcessing(true);
     const reader = new FileReader();
     
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
-        const result = importBackup(e.target.result);
+        const result = await importBackup(e.target.result);
         console.log('Import result:', result);
         
-        if (result.success) {
+        if (result && result.success) {
           const stats = result.stats || {};
           let msg = `Import successful! Loaded: ${stats.customers || 0} customers, ${stats.projects || 0} transactions, ${stats.receipts || 0} receipts`;
           
@@ -108,7 +109,9 @@ export default function BackupManager({ onClose }) {
           }, 1000);
         } else {
           let errorMsg = 'Import failed: ';
-          if (result.errors) {
+          if (result && result.error) {
+            errorMsg += result.error;
+          } else if (result && result.errors) {
             errorMsg += result.errors.join(', ');
           } else if (result.error) {
             errorMsg += result.error;
@@ -118,19 +121,22 @@ export default function BackupManager({ onClose }) {
           showMessage(errorMsg, 'error');
         }
       } catch (error) {
-        showMessage('Import error: ' + error.message, 'error');
         console.error('Import catch error:', error);
+        showMessage('Import error: ' + (error.message || 'Unknown error occurred'), 'error');
+      } finally {
+        setIsProcessing(false);
+        event.target.value = ''; // Reset file input
       }
-      setIsProcessing(false);
     };
     
     reader.onerror = (error) => {
-      showMessage('Failed to read file: ' + error.target.error.message, 'error');
+      console.error('File read error:', error);
+      showMessage('Failed to read file: ' + (error.target?.error?.message || 'Unknown error'), 'error');
       setIsProcessing(false);
+      event.target.value = '';
     };
     
-    reader.readAsText(file, 'UTF-8');
-    event.target.value = '';
+    reader.readAsText(file);
   };
 
   const handleRestore = (backupKey, timestamp) => {

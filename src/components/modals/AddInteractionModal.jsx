@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 const INTERACTION_TYPES = [
   { value: 'call', label: 'Phone Call', icon: '📞' },

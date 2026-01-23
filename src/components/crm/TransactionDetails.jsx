@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 export default function TransactionDetails({ transaction, onClose, onEdit, onDelete }) {
   const [activeTab, setActiveTab] = useState('overview');

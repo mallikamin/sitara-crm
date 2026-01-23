@@ -1,0 +1,283 @@
+================================================================================
+SITARA CRM - WORKPLACE SERVER DEPLOYMENT INSTRUCTIONS
+================================================================================
+
+This document contains step-by-step instructions for deploying Sitara CRM
+from your local PC to a workplace server with PostgreSQL database.
+
+================================================================================
+PREREQUISITES
+================================================================================
+
+1. Server Requirements:
+   - Windows Server or Linux server with Docker installed
+   - Minimum 4GB RAM, 20GB free disk space
+   - Port 5000 (backend API) and 3000 (frontend) available
+   - Port 5432 (PostgreSQL) - can be internal only
+
+2. Software Required:
+   - Docker Desktop (Windows) or Docker Engine (Linux)
+   - Git (for cloning repository)
+   - Node.js 18+ (for building frontend)
+
+================================================================================
+STEP 1: PREPARE FILES FOR DEPLOYMENT
+================================================================================
+
+1. Copy the entire project folder to the server
+2. Ensure these files exist:
+   - docker-compose.yml
+   - backend/ folder with all files
+   - src/ folder with all files
+   - package.json (root and backend)
+
+================================================================================
+STEP 2: CONFIGURE ENVIRONMENT VARIABLES
+================================================================================
+
+1. Create backend/.env file (copy from backend/.env.example):
+   
+   DATABASE_URL=postgresql://sitara_user:sitara_password_2024@postgres:5432/sitara_crm
+   PORT=5000
+   NODE_ENV=production
+   JWT_SECRET=CHANGE_THIS_TO_A_SECURE_RANDOM_STRING
+   CORS_ORIGIN=http://YOUR_SERVER_IP:3000
+
+2. Create .env file in root (for frontend):
+   
+   VITE_API_URL=http://YOUR_SERVER_IP:5000/api
+
+3. IMPORTANT: Change these values:
+   - JWT_SECRET: Generate a secure random string
+   - CORS_ORIGIN: Replace with your server's IP or domain
+   - VITE_API_URL: Replace with your server's IP or domain
+   - Database password: Change from default
+
+================================================================================
+STEP 3: UPDATE DOCKER COMPOSE FOR PRODUCTION
+================================================================================
+
+Edit docker-compose.yml and update:
+
+1. Database password (POSTGRES_PASSWORD):
+   - Change from 'sitara_password_2024' to a secure password
+   - Update DATABASE_URL in backend/.env to match
+
+2. Port mappings (if needed):
+   - Backend: "5000:5000" (change if port 5000 is in use)
+   - PostgreSQL: "5432:5432" (can be removed for internal only)
+
+3. Add volume for persistent data:
+   - Ensure postgres_data volume is properly configured
+   - Consider adding backup volume for database backups
+
+================================================================================
+STEP 4: BUILD AND START SERVICES
+================================================================================
+
+1. Open terminal/command prompt on the server
+2. Navigate to project directory
+3. Build and start services:
+
+   docker-compose up -d --build
+
+4. Check if services are running:
+
+   docker-compose ps
+
+5. Check logs:
+
+   docker-compose logs -f
+
+================================================================================
+STEP 5: INITIALIZE DATABASE
+================================================================================
+
+1. Wait for PostgreSQL to be ready (check logs)
+2. Database schema will be created automatically from migrations/
+3. Verify database:
+
+   docker-compose exec postgres psql -U sitara_user -d sitara_crm -c "\dt"
+
+================================================================================
+STEP 6: BUILD FRONTEND
+================================================================================
+
+1. Install dependencies:
+
+   npm install
+
+2. Build for production:
+
+   npm run build
+
+3. The build output will be in dist/ folder
+
+================================================================================
+STEP 7: CONFIGURE WEB SERVER (OPTIONAL)
+================================================================================
+
+For production, you may want to serve the frontend through Nginx or Apache:
+
+1. Install Nginx (Linux) or configure IIS (Windows)
+2. Point to dist/ folder
+3. Configure reverse proxy for API:
+   - /api/* -> http://localhost:5000/api/*
+
+Example Nginx config:
+
+   server {
+       listen 80;
+       server_name your-domain.com;
+       
+       root /path/to/sitara-crm/dist;
+       index index.html;
+       
+       location / {
+           try_files $uri $uri/ /index.html;
+       }
+       
+       location /api {
+           proxy_pass http://localhost:5000;
+           proxy_http_version 1.1;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection 'upgrade';
+           proxy_set_header Host $host;
+           proxy_cache_bypass $http_upgrade;
+       }
+   }
+
+================================================================================
+STEP 8: MIGRATE EXISTING DATA (IF ANY)
+================================================================================
+
+If you have existing localStorage data:
+
+1. Export data from old system:
+   - Open browser console
+   - Run: localStorage.getItem('sitara_crm_data')
+   - Copy the JSON output
+   - Save to a file (e.g., backup.json)
+
+2. Import to new system:
+   - Access the application
+   - Go to Backup/Import section
+   - Upload the backup.json file
+   - Or use the migration API endpoint
+
+================================================================================
+STEP 9: SECURITY CHECKLIST
+================================================================================
+
+Before going live:
+
+[ ] Changed default database password
+[ ] Changed JWT_SECRET to secure random string
+[ ] Updated CORS_ORIGIN to your domain
+[ ] Configured firewall rules (only allow necessary ports)
+[ ] Set up SSL/TLS certificate (HTTPS)
+[ ] Configured database backups
+[ ] Set up monitoring/logging
+[ ] Restricted database port (5432) to internal network only
+[ ] Updated API URL in frontend .env
+
+================================================================================
+STEP 10: TESTING
+================================================================================
+
+1. Test API health:
+   http://YOUR_SERVER_IP:5000/health
+
+2. Test frontend:
+   http://YOUR_SERVER_IP:3000 (or your configured domain)
+
+3. Test all features:
+   - Create customer
+   - Create project
+   - Add receipt
+   - Export/import backup
+   - All tabs and functions
+
+================================================================================
+MAINTENANCE
+================================================================================
+
+1. Database Backups:
+   - Run daily: docker-compose exec postgres pg_dump -U sitara_user sitara_crm > backup.sql
+   - Or use automated backup script
+
+2. Update Application:
+   - Pull latest code
+   - Rebuild: docker-compose up -d --build
+   - Restart services: docker-compose restart
+
+3. View Logs:
+   - Backend: docker-compose logs backend
+   - Database: docker-compose logs postgres
+   - All: docker-compose logs -f
+
+4. Stop Services:
+   - docker-compose down (keeps data)
+   - docker-compose down -v (removes volumes - WARNING: deletes data)
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: Database connection error
+Solution: 
+  - Check if postgres container is running: docker-compose ps
+  - Check database logs: docker-compose logs postgres
+  - Verify DATABASE_URL in backend/.env matches docker-compose.yml
+
+Problem: API not accessible
+Solution:
+  - Check if backend container is running
+  - Verify CORS_ORIGIN setting
+  - Check firewall rules
+  - Check backend logs: docker-compose logs backend
+
+Problem: Frontend can't connect to API
+Solution:
+  - Verify VITE_API_URL in .env file
+  - Check CORS_ORIGIN in backend/.env
+  - Ensure API is accessible from browser
+
+Problem: Migration failed
+Solution:
+  - Check database is initialized
+  - Verify migration SQL files are correct
+  - Check database logs for errors
+
+================================================================================
+FILES TO EDIT FOR DEPLOYMENT
+================================================================================
+
+1. backend/.env
+   - DATABASE_URL
+   - PORT
+   - JWT_SECRET
+   - CORS_ORIGIN
+
+2. .env (root)
+   - VITE_API_URL
+
+3. docker-compose.yml
+   - POSTGRES_PASSWORD
+   - Port mappings (if needed)
+
+4. src/services/api.ts (if hardcoded URL)
+   - API_URL constant
+
+================================================================================
+SUPPORT
+================================================================================
+
+For issues or questions:
+1. Check logs: docker-compose logs
+2. Verify all environment variables
+3. Check database connection
+4. Review this document
+
+================================================================================
+

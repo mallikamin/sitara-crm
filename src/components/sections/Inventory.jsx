@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 import { formatCurrency } from '../../utils/formatters';
 import ImportInventoryModal from '../modals/ImportInventoryModal';
 import AddInventoryModal from '../modals/AddInventoryModal';

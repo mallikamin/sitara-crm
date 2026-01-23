@@ -6,7 +6,7 @@ import StatCard from './StatCard';
 import { InventorySection } from './InventorySection';
 import { InventoryItem } from '../../types/crm';
 import { Package, Users, Building, DollarSign, Clock, AlertTriangle, TrendingUp, Handshake } from 'lucide-react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 const Dashboard: React.FC = () => {
   const { db, deleteInventory, bulkImportInventory, addNotification, addCustomer, addProject, addInteraction, addReceipt, addInventory } = useCRMStore();

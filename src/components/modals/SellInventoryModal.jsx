@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useData } from '../../contexts/DataContext';
+import { useData } from '../../contexts/DataContextAPI';
 
 const SellInventoryModal = ({ open, onClose, inventoryItem, onSave }) => {
   // Get customers and brokers directly from DataContext - this ensures we always have the latest data

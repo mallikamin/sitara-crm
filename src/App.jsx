@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { DataProvider, useData } from './contexts/DataContext';
+import { DataProvider, useData } from './contexts/DataContextAPI';
+import { MigrationButton } from './components/MigrationButton';
 import Header from './components/common/Header';
 import Dashboard from './components/sections/Dashboard';
 import Customers from './components/sections/Customers';
@@ -185,6 +186,7 @@ function AppContent() {
 
   return (
     <div className="app">
+      <MigrationButton />
       <Header
         currentSection={currentSection}
         onSectionChange={handleSectionChange}
