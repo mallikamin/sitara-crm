@@ -4,27 +4,54 @@ import { useData } from '../../contexts/DataContextAPI';
 export default function TransactionDetails({ transaction, onClose, onEdit, onDelete }) {
   const [activeTab, setActiveTab] = useState('overview');
   const [brokerDetails, setBrokerDetails] = useState(null);
+  const [customerDetails, setCustomerDetails] = useState(null);
 
-  const { getBroker, getCustomer, getBrokerFinancials } = useData();
+  const { getBroker, getCustomer, getBrokerFinancials, customers, commissionPayments } = useData();
 
   // Fetch broker and customer details on load
   useEffect(() => {
     if (!transaction) return;
     
       // Fetch broker details if brokerId exists
-      if (transaction.brokerId) {
-        const broker = getBroker(transaction.brokerId);
+      if (transaction.brokerId || transaction.broker_id) {
+        const broker = getBroker(transaction.brokerId || transaction.broker_id);
         setBrokerDetails(broker);
       }
       
-      // Note: customer details are already in transaction.customerName
-      // but could also fetch full customer object if needed:
-      // const customer = getCustomer(transaction.customerId);
-      // setCustomerDetails(customer);
+      // FIXED: Always lookup customer by ID
+      const customerId = transaction.customerId || transaction.customer_id;
+      if (customerId) {
+        // Try getCustomer first, then fallback to direct lookup
+        let customer = getCustomer ? getCustomer(customerId) : null;
+        if (!customer && customers) {
+          customer = customers.find(c => String(c.id) === String(customerId));
+        }
+        setCustomerDetails(customer);
+      }
     
-  }, [transaction, getBroker, getCustomer]);
+  }, [transaction, getBroker, getCustomer, customers]);
 
   if (!transaction) return null;
+
+  // ========== NORMALIZE FIELD NAMES (snake_case from DB -> camelCase) ==========
+  const normalizedTransaction = {
+    ...transaction,
+    projectName: transaction.projectName || transaction.project_name || transaction.name,
+    firstDueDate: transaction.firstDueDate || transaction.first_due_date,
+    nextDueDate: transaction.nextDueDate || transaction.next_due_date,
+    installmentCount: parseInt(transaction.installmentCount || transaction.installment_count || transaction.installments) || 4,
+    paymentCycle: transaction.paymentCycle || transaction.payment_cycle || transaction.cycle || 'bi_annual',
+    unitNumber: transaction.unitNumber || transaction.unit_number || transaction.unit,
+    ratePerMarla: transaction.ratePerMarla || transaction.rate_per_marla || transaction.rate,
+    brokerId: transaction.brokerId || transaction.broker_id,
+    customerId: transaction.customerId || transaction.customer_id,
+    companyRepId: transaction.companyRepId || transaction.company_rep_id,
+  };
+
+  // Get customer name - FIXED: Use looked up customer details
+  const customerName = customerDetails?.name || transaction.customerName || 'N/A';
+  const customerPhone = customerDetails?.phone || '';
+  const customerEmail = customerDetails?.email || '';
 
   // Calculate financial metrics
   const saleValue = parseFloat(transaction.sale) || parseFloat(transaction.saleValue) || 0;
@@ -32,13 +59,14 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
   const receivable = saleValue - received;
   const collectionPercentage = saleValue > 0 ? Math.round((received / saleValue) * 100) : 0;
 
-  // Generate payment schedule
+  // Generate payment schedule - FIXED: Use normalized fields
   const generatePaymentSchedule = () => {
-    if (!transaction.installments || !transaction.firstDueDate) return [];
+    const firstDue = normalizedTransaction.firstDueDate;
+    if (!firstDue) return [];
 
-    const installments = parseInt(transaction.installments) || 4;
-    const paymentCycle = transaction.paymentCycle || transaction.cycle || 'bi_annual';
-    const firstDueDate = new Date(transaction.firstDueDate);
+    const installments = normalizedTransaction.installmentCount;
+    const paymentCycle = normalizedTransaction.paymentCycle;
+    const firstDueDate = new Date(firstDue);
     
     const cycleMonths = {
       monthly: 1,
@@ -52,61 +80,111 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
 
     const monthsPerCycle = cycleMonths[paymentCycle] || 6;
     const installmentAmount = saleValue / installments;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Track how much has been paid to determine installment status
+    let remainingPaid = received;
 
     return Array.from({ length: installments }, (_, i) => {
       const dueDate = new Date(firstDueDate);
       dueDate.setMonth(dueDate.getMonth() + (i * monthsPerCycle));
       
+      // Calculate status based on actual payments
+      const amountPaidForThis = Math.min(remainingPaid, installmentAmount);
+      remainingPaid -= amountPaidForThis;
+      
+      let status = 'pending';
+      if (amountPaidForThis >= installmentAmount) {
+        status = 'paid';
+      } else if (amountPaidForThis > 0) {
+        status = 'partial';
+      } else if (dueDate < today) {
+        status = 'overdue';
+      }
+      
       return {
         installment: i + 1,
         amount: installmentAmount,
+        paidAmount: amountPaidForThis,
         dueDate,
-        status: i === 0 ? 'paid' : 'pending' // Simple logic, could be enhanced
+        status
       };
     });
   }
 
-  const paymentSchedule = useMemo(generatePaymentSchedule, [transaction]);
+  const paymentSchedule = useMemo(generatePaymentSchedule, [transaction, saleValue, received]);
 
-  // Calculate broker commission (uses per-transaction rate - FIXED)
+  // Calculate broker commission - FIXED: Use actual commission payments
   const calculateBrokerCommission = () => {
-    if (!transaction.brokerId) return { commission: 0, rate: 0, commissionPaid: 0, commissionPending: 0, paidPercentage: 0 };
+    const brokerId = normalizedTransaction.brokerId;
+    if (!brokerId) return { commission: 0, rate: 0, commissionPaid: 0, commissionPending: 0, paidPercentage: 0 };
     
     // Use per-transaction commission rate (1% default)
-    const commissionRate = parseFloat(transaction.brokerCommissionRate) || 1;
+    const commissionRate = parseFloat(transaction.brokerCommissionRate || transaction.broker_commission_rate) || 1;
     const commission = (saleValue * commissionRate) / 100;
-    const commissionPaid = (received * commissionRate) / 100;
-    const commissionPending = commission - commissionPaid;
+    
+    // FIXED: Get ACTUAL paid commission from commissionPayments table
+    const actualPaid = (commissionPayments || [])
+      .filter(cp => 
+        String(cp.projectId || cp.project_id) === String(transaction.id) && 
+        (cp.recipientType === 'broker' || cp.recipient_type === 'broker')
+      )
+      .reduce((sum, cp) => sum + (parseFloat(cp.amount) || parseFloat(cp.paidAmount) || 0), 0);
+    
+    const commissionPending = commission - actualPaid;
     
     return {
       commission,
-      commissionPaid,
-      commissionPending,
+      commissionPaid: actualPaid,
+      commissionPending: Math.max(0, commissionPending),
       rate: commissionRate,
-      paidPercentage: commission > 0 ? Math.round((commissionPaid / commission) * 100) : 0
+      paidPercentage: commission > 0 ? Math.round((actualPaid / commission) * 100) : 0
     };
   };
 
-  // Calculate company rep commission (NEW)
+  // Calculate company rep commission - FIXED: Only if assigned AND rate > 0
   const calculateCompanyRepCommission = () => {
-    if (!transaction.companyRepId) return { commission: 0, rate: 0, commissionPaid: 0, commissionPending: 0, paidPercentage: 0 };
+    const companyRepId = normalizedTransaction.companyRepId;
+    const commissionRate = parseFloat(transaction.companyRepCommissionRate || transaction.company_rep_commission_rate) || 0;
     
-    const commissionRate = parseFloat(transaction.companyRepCommissionRate) || 1;
+    // FIXED: No commission if no company rep assigned OR rate is 0
+    if (!companyRepId || commissionRate <= 0) {
+      return { commission: 0, rate: 0, commissionPaid: 0, commissionPending: 0, paidPercentage: 0 };
+    }
+    
     const commission = (saleValue * commissionRate) / 100;
-    const commissionPaid = (received * commissionRate) / 100;
-    const commissionPending = commission - commissionPaid;
+    
+    // Get ACTUAL paid commission from commissionPayments table
+    const actualPaid = (commissionPayments || [])
+      .filter(cp => 
+        String(cp.projectId || cp.project_id) === String(transaction.id) && 
+        (cp.recipientType === 'companyRep' || cp.recipient_type === 'companyRep' || cp.recipientType === 'company_rep')
+      )
+      .reduce((sum, cp) => sum + (parseFloat(cp.amount) || parseFloat(cp.paidAmount) || 0), 0);
+    
+    const commissionPending = commission - actualPaid;
     
     return {
       commission,
-      commissionPaid,
-      commissionPending,
+      commissionPaid: actualPaid,
+      commissionPending: Math.max(0, commissionPending),
       rate: commissionRate,
-      paidPercentage: commission > 0 ? Math.round((commissionPaid / commission) * 100) : 0
+      paidPercentage: commission > 0 ? Math.round((actualPaid / commission) * 100) : 0
     };
   };
 
   const brokerCommission = calculateBrokerCommission();
   const companyRepCommission = calculateCompanyRepCommission();
+
+  // Calculate actual next due date from payment schedule
+  const calculatedNextDueDate = useMemo(() => {
+    if (paymentSchedule.length === 0) return null;
+    
+    // Find the first unpaid or overdue installment
+    const nextDue = paymentSchedule.find(p => p.status === 'pending' || p.status === 'overdue' || p.status === 'partial');
+    return nextDue ? nextDue.dueDate : null;
+  }, [paymentSchedule]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -221,8 +299,20 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
                   <div className="space-y-2">
                     <div>
                       <span className="text-sm text-gray-600">Name:</span>
-                      <div className="font-medium">{transaction.customerName || 'N/A'}</div>
+                      <div className="font-medium">{customerName}</div>
                     </div>
+                    {customerPhone && (
+                      <div>
+                        <span className="text-sm text-gray-600">Phone:</span>
+                        <div className="font-medium">{customerPhone}</div>
+                      </div>
+                    )}
+                    {customerEmail && (
+                      <div>
+                        <span className="text-sm text-gray-600">Email:</span>
+                        <div className="font-medium">{customerEmail}</div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -231,12 +321,18 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
                   <div className="space-y-2">
                     <div>
                       <span className="text-sm text-gray-600">Project:</span>
-                      <div className="font-medium">{transaction.projectName || 'N/A'}</div>
+                      <div className="font-medium">{normalizedTransaction.projectName || 'N/A'}</div>
                     </div>
                     <div>
                       <span className="text-sm text-gray-600">Unit:</span>
-                      <div className="font-medium">{transaction.unit || transaction.unitNumber || 'N/A'}</div>
+                      <div className="font-medium">{normalizedTransaction.unitNumber || 'N/A'}</div>
                     </div>
+                    {normalizedTransaction.ratePerMarla > 0 && (
+                      <div>
+                        <span className="text-sm text-gray-600">Rate/Marla:</span>
+                        <div className="font-medium">₨{parseFloat(normalizedTransaction.ratePerMarla).toLocaleString()}</div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -312,26 +408,42 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
             <div className="space-y-6">
               <h3 className="text-lg font-semibold mb-4">Payment Schedule</h3>
               {paymentSchedule.length === 0 ? (
-                <p className="text-gray-500">No payment schedule available</p>
+                <div className="text-center py-8">
+                  <p className="text-gray-500">No payment schedule available</p>
+                  <p className="text-sm text-gray-400 mt-2">First due date is not set for this transaction</p>
+                </div>
               ) : (
                 <div className="space-y-3">
                   {paymentSchedule.map((payment) => (
-                    <div key={payment.installment} className="border rounded-lg p-4">
+                    <div key={payment.installment} className={`border rounded-lg p-4 ${
+                      payment.status === 'overdue' ? 'border-red-300 bg-red-50' : ''
+                    }`}>
                       <div className="flex items-center justify-between">
                         <div>
                           <div className="font-medium">Installment #{payment.installment}</div>
                           <div className="text-sm text-gray-600">
                             Due: {payment.dueDate.toLocaleDateString()}
                           </div>
+                          {payment.status === 'partial' && (
+                            <div className="text-xs text-blue-600 mt-1">
+                              Paid: ₨{payment.paidAmount?.toLocaleString() || 0}
+                            </div>
+                          )}
                         </div>
                         <div className="text-right">
                           <div className="font-bold">₨{payment.amount.toLocaleString()}</div>
                           <span className={`text-xs px-2 py-1 rounded ${
                             payment.status === 'paid' 
                               ? 'bg-green-100 text-green-800' 
+                              : payment.status === 'overdue'
+                              ? 'bg-red-100 text-red-800'
+                              : payment.status === 'partial'
+                              ? 'bg-blue-100 text-blue-800'
                               : 'bg-yellow-100 text-yellow-800'
                           }`}>
-                            {payment.status === 'paid' ? 'Paid' : 'Pending'}
+                            {payment.status === 'paid' ? 'Paid' : 
+                             payment.status === 'overdue' ? 'Overdue' :
+                             payment.status === 'partial' ? 'Partial' : 'Pending'}
                           </span>
                         </div>
                       </div>
@@ -350,21 +462,23 @@ export default function TransactionDetails({ transaction, onClose, onEdit, onDel
                   <div>
                     <div className="mb-4">
                       <label className="block text-sm font-medium text-gray-600 mb-1">Installments</label>
-                      <p>{transaction.installments || 4}</p>
+                      <p>{normalizedTransaction.installmentCount}</p>
                     </div>
                     <div className="mb-4">
                       <label className="block text-sm font-medium text-gray-600 mb-1">Payment Cycle</label>
-                      <p className="capitalize">{transaction.paymentCycle?.replace('_', ' ') || 'Bi-Annual'}</p>
+                      <p className="capitalize">{normalizedTransaction.paymentCycle?.replace('_', ' ') || 'Bi-Annual'}</p>
                     </div>
                   </div>
                   <div>
                     <div className="mb-4">
                       <label className="block text-sm font-medium text-gray-600 mb-1">First Due Date</label>
-                      <p>{transaction.firstDueDate ? new Date(transaction.firstDueDate).toLocaleDateString() : 'Not set'}</p>
+                      <p>{normalizedTransaction.firstDueDate ? new Date(normalizedTransaction.firstDueDate).toLocaleDateString() : 'Not set'}</p>
                     </div>
                     <div className="mb-4">
                       <label className="block text-sm font-medium text-gray-600 mb-1">Next Due Date</label>
-                      <p>{transaction.nextDueDate ? new Date(transaction.nextDueDate).toLocaleDateString() : 'Not set'}</p>
+                      <p>{calculatedNextDueDate 
+                        ? calculatedNextDueDate.toLocaleDateString() 
+                        : (receivable <= 0 ? 'All paid' : 'Not set')}</p>
                     </div>
                   </div>
                 </div>

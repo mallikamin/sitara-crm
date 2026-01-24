@@ -30,17 +30,93 @@ function Projects({ onBulkUpload }) {
   // Get customers and brokers for filters
   const customersList = customers || [];
   const brokersList = brokers || [];
+
+  // Helper to get customer name by ID
+  const getCustomerName = (customerId) => {
+    if (!customerId) return null;
+    const customer = customersList.find(c => String(c.id) === String(customerId));
+    return customer?.name || null;
+  };
+
+  // Helper to get broker name by ID
+  const getBrokerName = (brokerId) => {
+    if (!brokerId) return null;
+    const broker = brokersList.find(b => String(b.id) === String(brokerId));
+    return broker?.name || null;
+  };
+
+  // Helper to calculate due amounts
+  const getCycleMonths = (cycle) => {
+    const cycles = { monthly: 1, quarterly: 3, bi_annual: 6, biannual: 6, semi_annual: 6, annual: 12, yearly: 12 };
+    return cycles[cycle] || 6;
+  };
+
+  const calculateDueAmounts = (project) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const sale = parseFloat(project.sale) || parseFloat(project.saleValue) || 0;
+    const received = parseFloat(project.received) || parseFloat(project.totalReceived) || 0;
+    const totalReceivable = sale - received;
+    
+    if (totalReceivable <= 0) return { overdueAmount: 0, futureAmount: 0 };
+    
+    const firstDue = project.first_due_date || project.firstDueDate || project.nextDue || project.nextDueDate;
+    if (!firstDue) return { overdueAmount: 0, futureAmount: totalReceivable };
+    
+    const installmentCount = parseInt(project.installment_count) || parseInt(project.installmentCount) || 
+                             parseInt(project.installments) || 4;
+    const cycleMonths = getCycleMonths(project.payment_cycle || project.paymentCycle || project.cycle);
+    const installmentAmount = sale / installmentCount;
+    
+    let remaining = received;
+    let overdueAmount = 0;
+    let futureAmount = 0;
+    
+    for (let i = 0; i < installmentCount; i++) {
+      const dueDate = new Date(firstDue);
+      dueDate.setMonth(dueDate.getMonth() + (i * cycleMonths));
+      dueDate.setHours(0, 0, 0, 0);
+      
+      const paid = Math.min(remaining, installmentAmount);
+      remaining -= paid;
+      const due = installmentAmount - paid;
+      
+      if (due > 0) {
+        if (dueDate <= today) overdueAmount += due;
+        else futureAmount += due;
+      }
+    }
+    
+    return { overdueAmount, futureAmount };
+  };
   
-  // Normalize transactions data
-  const allTransactions = (projects || []).map(project => ({
-    ...project,
-    saleValue: project.sale || project.saleValue || project.totalSale || 0,
-    totalReceived: project.received || project.totalReceived || 0,
-    totalReceivable: project.receivable || project.totalReceivable || 
-      ((project.sale || project.saleValue || 0) - (project.received || project.totalReceived || 0)),
-    unitNumber: project.unit || project.unitNumber,
-    nextDueDate: project.nextDue || project.nextDueDate || project.firstDueDate,
-  }));
+  // Normalize transactions data - FIX CUSTOMER NAME LOOKUP
+  const allTransactions = (projects || []).map(project => {
+    const dueAmounts = calculateDueAmounts(project);
+    return {
+      ...project,
+      // FIXED: Lookup customer name if not present
+      customerName: project.customerName || getCustomerName(project.customerId || project.customer_id),
+      // FIXED: Lookup broker name if not present  
+      brokerName: project.brokerName || getBrokerName(project.brokerId || project.broker_id),
+      // FIXED: Map project_name from database
+      projectName: project.projectName || project.project_name || project.name,
+      saleValue: project.sale || project.saleValue || project.totalSale || 0,
+      totalReceived: project.received || project.totalReceived || 0,
+      totalReceivable: project.receivable || project.totalReceivable || 
+        ((project.sale || project.saleValue || 0) - (project.received || project.totalReceived || 0)),
+      unitNumber: project.unit || project.unitNumber || project.unit_number,
+      nextDueDate: project.nextDue || project.nextDueDate || project.firstDueDate || project.first_due_date,
+      overdueAmount: dueAmounts.overdueAmount,
+      futureAmount: dueAmounts.futureAmount,
+      // FIXED: Map commission rates from snake_case
+      brokerCommissionRate: parseFloat(project.brokerCommissionRate || project.broker_commission_rate) || 0,
+      companyRepCommissionRate: parseFloat(project.companyRepCommissionRate || project.company_rep_commission_rate) || 0,
+      brokerId: project.brokerId || project.broker_id,
+      companyRepId: project.companyRepId || project.company_rep_id,
+    };
+  });
 
   // ========== MASTER PROJECTS VIEW ==========
   const masterProjectsList = useMemo(() => {
@@ -84,22 +160,35 @@ function Projects({ onBulkUpload }) {
       group.totalReceived += received;
       group.totalReceivable += (sale - received);
       
-      // Calculate commissions
+      // Calculate commissions - FIXED: Only add if rate > 0
       const brokerCommissionRate = parseFloat(transaction.brokerCommissionRate || 0);
       const companyRepCommissionRate = parseFloat(transaction.companyRepCommissionRate || 0);
       
-      group.totalBrokerCommission += (sale * brokerCommissionRate / 100);
-      group.totalCompanyRepCommission += (sale * companyRepCommissionRate / 100);
+      // Only add broker commission if broker assigned and rate > 0
+      if (transaction.brokerId && brokerCommissionRate > 0) {
+        group.totalBrokerCommission += (sale * brokerCommissionRate / 100);
+      }
       
-      // Calculate paid commissions
+      // Only add company rep commission if company rep assigned AND rate > 0
+      if (transaction.companyRepId && companyRepCommissionRate > 0) {
+        group.totalCompanyRepCommission += (sale * companyRepCommissionRate / 100);
+      }
+      
+      // Calculate paid commissions from actual payments
       if (commissionPayments) {
         const brokerPayments = commissionPayments
-          .filter(cp => cp.projectId === transaction.id && cp.recipientType === 'broker')
-          .reduce((sum, cp) => sum + (cp.paidAmount || 0), 0);
+          .filter(cp => 
+            (String(cp.projectId) === String(transaction.id) || String(cp.project_id) === String(transaction.id)) && 
+            (cp.recipientType === 'broker' || cp.recipient_type === 'broker')
+          )
+          .reduce((sum, cp) => sum + (parseFloat(cp.amount) || parseFloat(cp.paidAmount) || 0), 0);
         
         const companyRepPayments = commissionPayments
-          .filter(cp => cp.projectId === transaction.id && cp.recipientType === 'companyRep')
-          .reduce((sum, cp) => sum + (cp.paidAmount || 0), 0);
+          .filter(cp => 
+            (String(cp.projectId) === String(transaction.id) || String(cp.project_id) === String(transaction.id)) && 
+            (cp.recipientType === 'companyRep' || cp.recipient_type === 'companyRep' || cp.recipientType === 'company_rep')
+          )
+          .reduce((sum, cp) => sum + (parseFloat(cp.amount) || parseFloat(cp.paidAmount) || 0), 0);
         
         group.totalBrokerCommissionPaid += brokerPayments;
         group.totalCompanyRepCommissionPaid += companyRepPayments;
@@ -176,13 +265,23 @@ function Projects({ onBulkUpload }) {
         const saleValue = Number(transaction.saleValue || transaction.sale || 0);
         const received = Number(transaction.totalReceived || transaction.received || 0);
         const receivable = saleValue - received;
-        const brokerCommission = (saleValue * (transaction.brokerCommissionRate || 0)) / 100;
-        const companyRepCommission = (saleValue * (transaction.companyRepCommissionRate || 0)) / 100;
+        
+        // FIXED: Only calculate commission if assigned AND rate > 0
+        const brokerCommission = transaction.brokerId && transaction.brokerCommissionRate > 0
+          ? (saleValue * transaction.brokerCommissionRate / 100)
+          : 0;
+        const companyRepCommission = transaction.companyRepId && transaction.companyRepCommissionRate > 0
+          ? (saleValue * transaction.companyRepCommissionRate / 100)
+          : 0;
 
         return {
           totalSaleValue: acc.totalSaleValue + saleValue,
           totalReceived: acc.totalReceived + received,
           totalReceivable: acc.totalReceivable + receivable,
+          totalOverdue: acc.totalOverdue + (transaction.overdueAmount || 0),
+          totalFuture: acc.totalFuture + (transaction.futureAmount || 0),
+          totalBrokerCommission: acc.totalBrokerCommission + brokerCommission,
+          totalCompanyRepCommission: acc.totalCompanyRepCommission + companyRepCommission,
           totalCommission: acc.totalCommission + brokerCommission + companyRepCommission,
           count: acc.count + 1
         };
@@ -190,6 +289,10 @@ function Projects({ onBulkUpload }) {
         totalSaleValue: 0,
         totalReceived: 0,
         totalReceivable: 0,
+        totalOverdue: 0,
+        totalFuture: 0,
+        totalBrokerCommission: 0,
+        totalCompanyRepCommission: 0,
         totalCommission: 0,
         count: 0
       });
@@ -309,7 +412,7 @@ function Projects({ onBulkUpload }) {
       </div>
 
       {/* Stats Cards - Dynamic based on view */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div className={`grid grid-cols-1 gap-4 mb-6 ${viewMode === 'master' ? 'md:grid-cols-4' : 'md:grid-cols-5'}`}>
         {viewMode === 'master' ? (
           <>
             <div className="bg-white p-4 rounded-lg shadow">
@@ -344,12 +447,44 @@ function Projects({ onBulkUpload }) {
               <div className="text-sm text-gray-600">Total Received</div>
             </div>
             <div className="bg-white p-4 rounded-lg shadow">
-              <div className="text-2xl font-bold text-red-600">{formatCurrency(totals.totalReceivable)}</div>
-              <div className="text-sm text-gray-600">Total Receivable</div>
+              <div className="text-2xl font-bold text-red-600">{formatCurrency(totals.totalOverdue)}</div>
+              <div className="text-sm text-gray-600">Due Now (Overdue)</div>
+            </div>
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="text-2xl font-bold text-blue-600">{formatCurrency(totals.totalFuture)}</div>
+              <div className="text-sm text-gray-600">Future Receivable</div>
             </div>
           </>
         )}
       </div>
+
+      {/* Commission Summary - Only in Transactions View */}
+      {viewMode === 'transactions' && (totals.totalBrokerCommission > 0 || totals.totalCompanyRepCommission > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          {totals.totalBrokerCommission > 0 && (
+            <div className="bg-gradient-to-r from-purple-50 to-purple-100 p-4 rounded-lg shadow border border-purple-200">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-purple-800 font-semibold">🤵 Broker Commission</span>
+              </div>
+              <div className="text-2xl font-bold text-purple-700">{formatCurrency(totals.totalBrokerCommission)}</div>
+              <div className="text-sm text-purple-600">
+                {filteredTransactions.filter(t => t.brokerId && t.brokerCommissionRate > 0).length} transactions with broker
+              </div>
+            </div>
+          )}
+          {totals.totalCompanyRepCommission > 0 && (
+            <div className="bg-gradient-to-r from-green-50 to-green-100 p-4 rounded-lg shadow border border-green-200">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-green-800 font-semibold">👔 Company Rep Commission</span>
+              </div>
+              <div className="text-2xl font-bold text-green-700">{formatCurrency(totals.totalCompanyRepCommission)}</div>
+              <div className="text-sm text-green-600">
+                {filteredTransactions.filter(t => t.companyRepId && t.companyRepCommissionRate > 0).length} transactions with company rep
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white rounded-lg shadow p-4 mb-6">
